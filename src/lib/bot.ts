@@ -126,29 +126,41 @@ bot.use(async (ctx, next) => {
   await next();
 });
 
-/** Update ids whose handler threw — read by the webhook route to release the claim. */
+/**
+ * Updates whose handler failed *before writing anything*. The webhook route
+ * releases their claim so a Telegram redelivery is processed again.
+ *
+ * Failures where we could not reach Telegram are deliberately NOT listed here.
+ * By then the reminder is usually already saved and only the confirmation was
+ * lost, so replaying the update would create a second, duplicate reminder.
+ * Better a missing confirmation than a doubled reminder.
+ */
 export const failedUpdates = new Set<number>();
 
 // Errors must not escape to the webhook handler: an unhandled throw would make
-// Telegram redeliver the same update in a loop. Instead we log it, remember it,
-// and — crucially — tell the user, so a failed save is never silent.
+// Telegram redeliver the same update in a loop. Instead we log it, decide
+// whether a retry is safe, and — crucially — tell the user, so a failed save is
+// never silent.
 bot.catch(async (err) => {
   const ctx = err.ctx;
   const updateId = ctx.update.update_id;
-  failedUpdates.add(updateId);
 
   console.error(`Error while handling update ${updateId}:`, err.error);
 
   if (err.error instanceof GrammyError) {
+    // Telegram rejected our message. Sending another would fail the same way
+    // (blocked bot, bad chat), and the write, if any, already went through.
     console.error('Telegram API error:', err.error.description);
-    // The failure was Telegram rejecting our message — another message would
-    // fail the same way (blocked bot, bad chat), so do not try.
     return;
   }
   if (err.error instanceof HttpError) {
     console.error('Could not reach Telegram:', err.error);
     return;
   }
+
+  // Anything else is a storage failure: nothing was written, so a retry is both
+  // safe and useful.
+  failedUpdates.add(updateId);
 
   try {
     await ctx.reply(
@@ -673,6 +685,14 @@ bot.on('message:text', async (ctx) => {
 
   const userTz = await getUserTimezone(userId);
 
+  // Dates are resolved against the moment the message was SENT, not the moment
+  // we happen to process it. An update can arrive late — the phone queued it
+  // while offline, or Telegram redelivered it after our function failed — and
+  // "завтра в 9" written at 23:58 must not become the day after when it is
+  // handled at 00:03. Falls back to now if Telegram sends no usable timestamp.
+  const sentAtMs = ctx.message.date * 1000;
+  const sentAt = Number.isFinite(sentAtMs) && sentAtMs > 0 ? new Date(sentAtMs) : new Date();
+
   // --- Answering an "✏️ Изменить текст" / "🕐 Изменить время" prompt ---
   const pending = await getPendingAction(userId);
   if (pending) {
@@ -706,7 +726,7 @@ bot.on('message:text', async (ctx) => {
       return;
     }
 
-    const parsed = parseReminderInput(text, userTz);
+    const parsed = parseReminderInput(text, userTz, sentAt);
     if (!parsed) {
       await ctx.reply(
         `🤔 Не удалось распознать время.\n\n` +
@@ -744,7 +764,7 @@ bot.on('message:text', async (ctx) => {
   }
 
   // --- Creating a new reminder ---
-  const parsed = parseReminderInput(text, userTz);
+  const parsed = parseReminderInput(text, userTz, sentAt);
 
   if (!parsed) {
     await ctx.reply(

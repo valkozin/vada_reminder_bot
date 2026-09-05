@@ -102,6 +102,38 @@ expectParse('в пятницу в 7 вечера ужин', '2026-09-11T17:00:00
 expectParse('завтра 5 яблок купить', null);
 expectParse('в понедельник 5 яблок купить', '2026-09-07T07:00:00.000Z', '5 яблок купить');
 
+console.log('\n--- 3c. Задержанное сообщение отсчитывается от времени отправки ---');
+{
+  // Written at 23:58 Zurich (21:58 UTC), delivered five minutes later, already
+  // past midnight. Parsed against the send time, "завтра" must stay the 7th.
+  const typedAt = new Date('2026-09-05T21:58:00.000Z');
+  const processedAt = new Date('2026-09-05T22:03:00.000Z'); // 00:03 on the 6th
+
+  const fromSendTime = parseReminderInput('завтра в 9 позвонить', TZ, typedAt);
+  check(
+    '«завтра в 9» в 23:58 → 6 сентября, если считать от отправки',
+    fromSendTime?.dueDate.toISOString() === '2026-09-06T07:00:00.000Z',
+    `получено ${fromSendTime?.dueDate.toISOString()}`
+  );
+
+  const fromProcessTime = parseReminderInput('завтра в 9 позвонить', TZ, processedAt);
+  check(
+    'а от времени обработки — уже 7 сентября (сутки разницы, ради чего и правка)',
+    fromProcessTime?.dueDate.toISOString() === '2026-09-07T07:00:00.000Z',
+    `получено ${fromProcessTime?.dueDate.toISOString()}`
+  );
+
+  // A relative offset from a long-delayed message lands in the past, so cron
+  // delivers it on the next run instead of silently shifting it forward.
+  const deliveredAfterAnHour = new Date('2026-09-05T23:00:00.000Z');
+  const late = parseReminderInput('через 5 минут выключить плиту', TZ, typedAt);
+  check(
+    'просроченное «через 5 минут» остаётся в прошлом и придёт сразу',
+    late !== null && late.dueDate < deliveredAfterAnHour,
+    `получено ${late?.dueDate.toISOString()}`
+  );
+}
+
 console.log('\n--- 4. Повторяющиеся ---');
 {
   const daily = parseReminderInput('каждый день в 09:00 зарядка', TZ, NOW);
