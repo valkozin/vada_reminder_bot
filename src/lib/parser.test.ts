@@ -164,6 +164,39 @@ expectParse('отправить напоминание коллегам завт
     `получено ${JSON.stringify(parseReminderInput(plain!.text, TZ, NOW)?.text)}`);
 }
 
+console.log('\n--- 3f. Даты внутри имён и артикулов не разбираются ---');
+{
+  // Reported: "22.10.26" glued to "_в_09_00" is part of a name, not a date.
+  // The schedule is the one written after "напомни".
+  const res = parseReminderInput(
+    'Врач Др Trinh 22.10.26_в_09_00 напомни\n20 октября 2026 г. в 16:00',
+    TZ,
+    NOW
+  );
+  check(
+    'берётся дата после «напомни», а не артикул',
+    res?.dueDate.toISOString() === '2026-10-20T14:00:00.000Z',
+    `получено ${res?.dueDate.toISOString()}`
+  );
+  check(
+    'артикул остаётся в тексте целиком',
+    res?.text === 'Врач Др Trinh 22.10.26_в_09_00',
+    `получено «${res?.text}»`
+  );
+  check('и не считается второй датой', parseReminderInput(res!.text, TZ, NOW) === null);
+}
+
+{
+  const res = parseReminderInput('Глюкоз_ТЕСТ_22-10-2026_в_8_00 напомни\n18 октября 2026 г. в 16:00', TZ, NOW);
+  check(
+    'то же самое с дефисами и подчёркиваниями',
+    res?.dueDate.toISOString() === '2026-10-18T14:00:00.000Z',
+    `получено ${res?.dueDate.toISOString()}`
+  );
+  check('текст не тронут', res?.text === 'Глюкоз_ТЕСТ_22-10-2026_в_8_00', `получено «${res?.text}»`);
+  check('ложного предупреждения нет', parseReminderInput(res!.text, TZ, NOW) === null);
+}
+
 console.log('\n--- 3e. Суффикс года и время в отрыве от даты ---');
 {
   // Reported case: "г." between the year and the time broke them apart, so the

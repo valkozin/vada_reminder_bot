@@ -107,9 +107,14 @@ const COUNT = `(\\d{1,4}|${NUM_WORDS})`;
  * A hyphen only blocks on the right. That stops "22-10-2026" from being read
  * as the time 22:10 — an ambiguous date is better left as plain text than
  * silently misread — while "в 15:00-16:00" can still match its second half.
+ *
+ * The right boundary also refuses to stop just before a separator followed by
+ * a digit. Without that, backtracking still finds a shorter match inside a
+ * longer run: "22.10.26_в_09_00" would give up "22.10.26" only to settle for
+ * "22.10" and leave ".26_в_09_00" behind as text.
  */
 const LB = '(?<![0-9a-zа-яё_])';
-const RB = '(?![0-9a-zа-яё_\\-])';
+const RB = '(?![0-9a-zа-яё_\\-])(?![./:]\\d)';
 
 /** Clock time: "15:30", "15.30", "15-30". */
 const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
@@ -540,7 +545,7 @@ export function parseReminderInput(
   // --- 9. NUMERIC DATE: "15.09 в 12:00", "25.12.2026 12:00", "15.09" -------
   const numericDate = findAndCut(
     trimmed,
-    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${YEAR_SUFFIX}${TIME_OPT}`, 'i')
+    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${YEAR_SUFFIX}${TIME_OPT}${RB}`, 'i')
   );
   if (numericDate) {
     const day = +numericDate.m[1];
@@ -569,7 +574,7 @@ export function parseReminderInput(
   // --- 10. TEXT MONTH: "15 сентября в 10:00", "15 сентября" ----------------
   const textMonth = findAndCut(
     trimmed,
-    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${YEAR_SUFFIX}${TIME_OPT}`, 'i')
+    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${YEAR_SUFFIX}${TIME_OPT}${RB}`, 'i')
   );
   if (textMonth) {
     const day = +textMonth.m[1];
