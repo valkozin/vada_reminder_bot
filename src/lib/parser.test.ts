@@ -1,4 +1,4 @@
-import { parseReminderInput } from './parser';
+import { parseReminderInput, formatFullRussianDate } from './parser';
 
 function testParser() {
   const fixedNow = new Date('2026-09-05T10:00:00.000Z'); // Saturday Sep 5, 2026 10:00 UTC
@@ -36,7 +36,26 @@ function testParser() {
   console.assert(res6 !== null, 'Test 6 Failed: res6 is null');
   console.log('6. Text month:', res6?.dueDate.toISOString(), 'Text:', res6?.text);
 
+  // Test 7: "через 2 дня в 15:00 забрать посылку"
+  const res7 = parseReminderInput('через 2 дня в 15:00 забрать посылку', timezone, fixedNow);
+  console.assert(res7 !== null, 'Test 7 Failed: res7 is null');
+  console.log('7. Relative days with time:', res7?.dueDate.toISOString(), 'Text:', res7?.text);
+
+  // Test 8: Reschedule input without text: "через 2 часа"
+  const res8 = parseReminderInput('через 2 часа', timezone, fixedNow);
+  console.assert(res8 !== null, 'Test 8 Failed: res8 is null');
+  console.assert(res8?.text === '', 'Test 8 text should be empty');
+  console.log('8. Time only without text:', res8?.dueDate.toISOString(), 'Text is empty:', res8?.text === '');
+
+  // Test 9: formatFullRussianDate
+  if (res7) {
+    const formatted = formatFullRussianDate(res7.dueDate, timezone);
+    console.log('9. Formatted with weekday:', formatted);
+    console.assert(formatted.toLowerCase().includes('понедельник'), 'Should include weekday понедельник');
+  }
+
   console.log('✅ ALL PARSER TESTS PASSED!');
 }
 
 testParser();
+

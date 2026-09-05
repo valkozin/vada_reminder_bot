@@ -5,6 +5,7 @@ import { Reminder, UserSettings } from './types';
 const memoryStore = {
   users: new Map<number, string>(),
   reminders: new Map<string, Reminder>(),
+  active: new Set<string>(),
 };
 
 function getRedisClient(): Redis | null {
@@ -36,7 +37,7 @@ export async function setUserTimezone(userId: number, timezone: string): Promise
   }
 }
 
-// Create Reminder
+// Create or Update Reminder
 export async function saveReminder(reminder: Reminder): Promise<void> {
   const redis = getRedisClient();
   if (redis) {
@@ -45,6 +46,17 @@ export async function saveReminder(reminder: Reminder): Promise<void> {
     await redis.sadd(`active_reminders`, reminder.id);
   } else {
     memoryStore.reminders.set(reminder.id, reminder);
+    memoryStore.active.add(reminder.id);
+  }
+}
+
+// Mark reminder fired without deleting it (removes from active queue so cron won't re-trigger, but keeps it accessible for snooze/reschedule buttons)
+export async function markReminderFired(reminderId: string): Promise<void> {
+  const redis = getRedisClient();
+  if (redis) {
+    await redis.srem(`active_reminders`, reminderId);
+  } else {
+    memoryStore.active.delete(reminderId);
   }
 }
 
@@ -73,6 +85,7 @@ export async function deleteReminder(reminderId: string, userId?: number): Promi
     }
   } else {
     memoryStore.reminders.delete(reminderId);
+    memoryStore.active.delete(reminderId);
   }
 }
 
@@ -111,5 +124,35 @@ export async function getAllActiveReminders(): Promise<Reminder[]> {
     return reminders;
   }
 
-  return Array.from(memoryStore.reminders.values());
+  return Array.from(memoryStore.active)
+    .map((id) => memoryStore.reminders.get(id))
+    .filter((r): r is Reminder => !!r);
+}
+
+// User Pending Reschedule State (allows user to type time in words to reschedule a reminder)
+export async function setPendingReschedule(userId: number, reminderId: string): Promise<void> {
+  const redis = getRedisClient();
+  if (redis) {
+    // Expires in 15 minutes (900 seconds)
+    await redis.set(`user:${userId}:pending_reschedule`, reminderId, { ex: 900 });
+  } else {
+    memoryStore.users.set(`pending:${userId}` as any, reminderId);
+  }
+}
+
+export async function getPendingReschedule(userId: number): Promise<string | null> {
+  const redis = getRedisClient();
+  if (redis) {
+    return await redis.get<string>(`user:${userId}:pending_reschedule`);
+  }
+  return (memoryStore.users.get(`pending:${userId}` as any) as string) || null;
+}
+
+export async function clearPendingReschedule(userId: number): Promise<void> {
+  const redis = getRedisClient();
+  if (redis) {
+    await redis.del(`user:${userId}:pending_reschedule`);
+  } else {
+    memoryStore.users.delete(`pending:${userId}` as any);
+  }
 }

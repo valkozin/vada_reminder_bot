@@ -1,9 +1,18 @@
 import { Bot, InlineKeyboard } from 'grammy';
-import { parseReminderInput } from './parser';
-import { getUserTimezone, setUserTimezone, saveReminder, getUserReminders, deleteReminder, getReminder } from './db';
+import { parseReminderInput, formatFullRussianDate } from './parser';
+import {
+  getUserTimezone,
+  setUserTimezone,
+  saveReminder,
+  getUserReminders,
+  deleteReminder,
+  getReminder,
+  setPendingReschedule,
+  getPendingReschedule,
+  clearPendingReschedule,
+} from './db';
 import { Reminder } from './types';
-import { format, addMinutes, addHours, addDays } from 'date-fns';
-import { toZonedTime } from 'date-fns-tz';
+import { addMinutes } from 'date-fns';
 
 const token = process.env.TELEGRAM_BOT_TOKEN || 'dummy_token_for_build';
 export const bot = new Bot(token);
@@ -37,6 +46,7 @@ bot.command('start', async (ctx) => {
     `• \`завтра в 15:00 полить цветы\`\n` +
     `• \`сегодня в 18:30 купить хлеб\`\n` +
     `• \`в понедельник в 10:00 совещание\`\n` +
+    `• \`через 2 дня в 12:00 забрать посылку\`\n` +
     `• \`каждый день в 09:00 зарядка\`\n` +
     `• \`каждую пятницу в 18:00 отчет\`\n` +
     `• \`15.10 в 12:00 забрать документ\`\n\n` +
@@ -50,12 +60,13 @@ bot.command('help', async (ctx) => {
   const text =
     `📖 *Справка по командам:*\n\n` +
     `/list — Список всех активных напоминаний\n` +
+    `/cancel — Отменить текущее действие (например, ввод времени для переноса)\n` +
     `/tz [ЧасовойПояс] — Установить ваш часовой пояс (например: \`/tz Europe/Moscow\`)\n\n` +
     `💬 *Форматы естественного текста:*\n` +
     `1️⃣ *Относительное время:*\n` +
     `   • через 20 минут ...\n` +
     `   • через 2 часа ...\n` +
-    `   • через 3 дня ...\n\n` +
+    `   • через 2 дня в 15:00 ...\n\n` +
     `2️⃣ *Точное время:*\n` +
     `   • сегодня в 19:00 ...\n` +
     `   • завтра в 10:30 ...\n` +
@@ -68,6 +79,20 @@ bot.command('help', async (ctx) => {
     `   • каждый понедельник в 10:00 ...`;
 
   await ctx.reply(text, { parse_mode: 'Markdown' });
+});
+
+// /cancel command
+bot.command('cancel', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!userId) return;
+
+  const pending = await getPendingReschedule(userId);
+  if (pending) {
+    await clearPendingReschedule(userId);
+    await ctx.reply('❌ Перенос напоминания отменен.');
+  } else {
+    await ctx.reply('ℹ️ Нет активных действий для отмены.');
+  }
 });
 
 // /tz command
@@ -114,8 +139,7 @@ bot.command('list', async (ctx) => {
   const keyboard = new InlineKeyboard();
 
   reminders.forEach((r, idx) => {
-    const zonedDueDate = toZonedTime(new Date(r.dueDate), userTz);
-    const dateFormatted = format(zonedDueDate, 'dd.MM.yyyy HH:mm');
+    const dateFormatted = formatFullRussianDate(new Date(r.dueDate), userTz);
     const recurText = r.recurrence !== 'none' ? ` 🔄 (${r.recurrence})` : '';
 
     text += `${idx + 1}. ⏰ *${dateFormatted}*${recurText}\n    📝 ${r.text}\n\n`;
@@ -125,7 +149,7 @@ bot.command('list', async (ctx) => {
   await ctx.reply(text, { parse_mode: 'Markdown', reply_markup: keyboard });
 });
 
-// Callback queries handler (Delete / Snooze)
+// Callback queries handler (Delete / Snooze / Reschedule)
 bot.on('callback_query:data', async (ctx) => {
   const data = ctx.callbackQuery.data;
   const userId = ctx.from?.id;
@@ -134,10 +158,31 @@ bot.on('callback_query:data', async (ctx) => {
   if (data.startsWith('del:')) {
     const reminderId = data.replace('del:', '');
     await deleteReminder(reminderId, userId);
-    await ctx.answerCallbackQuery({ text: '🗑️ Напоминание удалено!' });
+    await ctx.answerCallbackQuery({ text: '✅ Выполнено!' });
     try {
-      await ctx.editMessageText('🗑️ Напоминание успешно удалено.');
+      await ctx.editMessageText('✅ Напоминание выполнено и удалено.');
     } catch (_) {}
+  } else if (data.startsWith('resched:')) {
+    const reminderId = data.replace('resched:', '');
+    const reminder = await getReminder(reminderId);
+
+    if (reminder) {
+      await setPendingReschedule(userId, reminderId);
+      await ctx.answerCallbackQuery({ text: '✍️ Напишите новое время' });
+      await ctx.reply(
+        `✍️ *Когда напомнить о задаче:*\n📌 «${reminder.text}»?\n\n` +
+          `Напишите время словами, например:\n` +
+          `• \`через 45 минут\`\n` +
+          `• \`сегодня в 21:00\`\n` +
+          `• \`завтра в 11:30\`\n` +
+          `• \`в понедельник в 10:00\`\n` +
+          `• \`через 2 дня в 15:00\`\n\n` +
+          `_(или отправьте /cancel для отмены)_`,
+        { parse_mode: 'Markdown' }
+      );
+    } else {
+      await ctx.answerCallbackQuery({ text: '❌ Напоминание не найдено.' });
+    }
   } else if (data.startsWith('snz:')) {
     // Format: snz:<id>:<minutes>
     const [, reminderId, minsStr] = data.split(':');
@@ -145,15 +190,38 @@ bot.on('callback_query:data', async (ctx) => {
     const reminder = await getReminder(reminderId);
 
     if (reminder) {
-      const newDueDate = addMinutes(new Date(), mins).toISOString();
+      const userTz = await getUserTimezone(userId);
+      const newDueDate = addMinutes(new Date(), mins);
       const updatedReminder: Reminder = {
         ...reminder,
-        dueDate: newDueDate,
+        dueDate: newDueDate.toISOString(),
       };
       await saveReminder(updatedReminder);
-      await ctx.answerCallbackQuery({ text: `⏰ Отложено на ${mins} минут!` });
+
+      const formattedNewDate = formatFullRussianDate(newDueDate, userTz);
+      let durationLabel = `${mins} мин`;
+      if (mins === 60) durationLabel = '1 час';
+      else if (mins === 180) durationLabel = '3 часа';
+      else if (mins === 1440) durationLabel = '1 день (завтра)';
+
+      await ctx.answerCallbackQuery({ text: `⏰ Отложено на ${durationLabel}!` });
+
+      const keyboard = new InlineKeyboard()
+        .text('⏰ +15 мин', `snz:${reminder.id}:15`)
+        .text('⏰ +1 час', `snz:${reminder.id}:60`)
+        .row()
+        .text('⏰ +3 часа', `snz:${reminder.id}:180`)
+        .text('📅 Завтра', `snz:${reminder.id}:1440`)
+        .row()
+        .text('✍️ Напомнить снова...', `resched:${reminder.id}`)
+        .text('✅ Выполнено', `del:${reminder.id}`);
+
       try {
-        await ctx.editMessageText(`⏰ Напоминание «${reminder.text}» отложено на ${mins} минут.`);
+        await ctx.editMessageText(
+          `⏰ Напоминание «*${reminder.text}*» отложено на *${durationLabel}*!\n\n` +
+            `⏰ *Новое время:* ${formattedNewDate}`,
+          { parse_mode: 'Markdown', reply_markup: keyboard }
+        );
       } catch (_) {}
     } else {
       await ctx.answerCallbackQuery({ text: '❌ Напоминание не найдено.' });
@@ -161,7 +229,7 @@ bot.on('callback_query:data', async (ctx) => {
   }
 });
 
-// Text message handler - Natural Language Parsing
+// Text message handler - Natural Language Parsing & Rescheduling
 bot.on('message:text', async (ctx) => {
   const userId = ctx.from?.id;
   const chatId = ctx.chat.id;
@@ -170,6 +238,62 @@ bot.on('message:text', async (ctx) => {
   if (!userId || text.startsWith('/')) return;
 
   const userTz = await getUserTimezone(userId);
+
+  // Check if user is currently answering a "✍️ Напомнить снова..." prompt
+  const pendingReminderId = await getPendingReschedule(userId);
+  if (pendingReminderId) {
+    const reminder = await getReminder(pendingReminderId);
+    if (!reminder) {
+      await clearPendingReschedule(userId);
+      await ctx.reply('❌ Исходное напоминание не найдено или уже было удалено.');
+      return;
+    }
+
+    const parsed = parseReminderInput(text, userTz);
+    if (!parsed) {
+      await ctx.reply(
+        `🤔 Не удалось распознать время.\n\n` +
+          `Попробуйте написать, например:\n` +
+          `• \`через 30 минут\`\n` +
+          `• \`завтра в 12:00\`\n` +
+          `• \`в понедельник в 10:00\`\n` +
+          `• \`через 2 дня в 15:00\`\n\n` +
+          `Отправьте /cancel для отмены.`,
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
+
+    // If user provided a new task description, update it; otherwise preserve existing task text
+    const newText = parsed.text && parsed.text.trim() ? parsed.text.trim() : reminder.text;
+    const updatedReminder: Reminder = {
+      ...reminder,
+      text: newText,
+      dueDate: parsed.dueDate.toISOString(),
+    };
+
+    await saveReminder(updatedReminder);
+    await clearPendingReschedule(userId);
+
+    const formattedDate = formatFullRussianDate(parsed.dueDate, userTz);
+
+    const keyboard = new InlineKeyboard()
+      .text('⏰ +15 мин', `snz:${reminder.id}:15`)
+      .text('⏰ +1 час', `snz:${reminder.id}:60`)
+      .row()
+      .text('✍️ Напомнить снова...', `resched:${reminder.id}`)
+      .text('✅ Выполнено', `del:${reminder.id}`);
+
+    await ctx.reply(
+      `✅ *Напоминание успешно перенесено!*\n\n` +
+        `📌 *Задача:* ${newText}\n` +
+        `⏰ *Новая дата и время:* ${formattedDate} (${userTz})`,
+      { parse_mode: 'Markdown', reply_markup: keyboard }
+    );
+    return;
+  }
+
+  // Normal Reminder Creation
   const parsed = parseReminderInput(text, userTz);
 
   if (!parsed) {
@@ -180,6 +304,18 @@ bot.on('message:text', async (ctx) => {
         `• \`завтра в 15:00 полить цветы\`\n` +
         `• \`каждый день в 09:00 зарядка\`\n\n` +
         `Подробная справка: /help`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  if (!parsed.text) {
+    const timeFmt = formatFullRussianDate(parsed.dueDate, userTz);
+    await ctx.reply(
+      `⚠️ Вы указали время: *${timeFmt}*, но не написали текст задачи!\n\n` +
+        `Напишите задачу вместе со временем, например:\n` +
+        `• \`завтра в 15:00 полить цветы\`\n` +
+        `• \`через 2 часа позвонить коллеге\``,
       { parse_mode: 'Markdown' }
     );
     return;
@@ -200,14 +336,15 @@ bot.on('message:text', async (ctx) => {
 
   await saveReminder(reminder);
 
-  const zonedDueDate = toZonedTime(parsed.dueDate, userTz);
-  const formattedDate = format(zonedDueDate, 'dd.MM.yyyy HH:mm');
-  const recurText = parsed.recurrence !== 'none' ? `\n🔄 Повтор: ${parsed.recurrence}` : '';
+  const formattedDate = formatFullRussianDate(parsed.dueDate, userTz);
+  const recurText = parsed.recurrence !== 'none' ? `\n🔄 *Повтор:* ${parsed.recurrence}` : '';
 
   const keyboard = new InlineKeyboard()
-    .text('❌ Удалить', `del:${reminderId}`)
-    .text('⏰ +10 мин', `snz:${reminderId}:10`)
-    .text('⏰ +1 час', `snz:${reminderId}:60`);
+    .text('⏰ +15 мин', `snz:${reminderId}:15`)
+    .text('⏰ +1 час', `snz:${reminderId}:60`)
+    .row()
+    .text('✍️ Напомнить снова...', `resched:${reminderId}`)
+    .text('❌ Удалить', `del:${reminderId}`);
 
   await ctx.reply(
     `✅ *Напоминание создано!*\n\n` +
@@ -216,3 +353,4 @@ bot.on('message:text', async (ctx) => {
     { parse_mode: 'Markdown', reply_markup: keyboard }
   );
 });
+

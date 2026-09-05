@@ -47,11 +47,11 @@ export function parseReminderInput(
   const userNow = toZonedTime(nowUtc, timezone);
 
   // 1. RECURRING: "каждый день в 09:00 [текст]", "ежедневно в 09:00", "по будням в 9:00"
-  const recurringDailyMatch = trimmed.match(/^(?:каждый\s+день|ежедневно)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const recurringDailyMatch = trimmed.match(/^(?:каждый\s+день|ежедневно)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (recurringDailyMatch) {
     const hours = parseInt(recurringDailyMatch[1], 10);
     const minutes = parseInt(recurringDailyMatch[2], 10);
-    const reminderText = recurringDailyMatch[3].trim();
+    const reminderText = (recurringDailyMatch[3] || '').trim();
     const targetDate = calculateNextOccurrenceTime(userNow, hours, minutes);
     return {
       text: reminderText,
@@ -63,11 +63,11 @@ export function parseReminderInput(
   }
 
   // RECURRING WEEKDAYS: "по будням в 09:00 [текст]", "каждый будний день в 09:00"
-  const recurringWeekdaysMatch = trimmed.match(/^(?:по\s+будням|каждый\s+будний\s+день)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const recurringWeekdaysMatch = trimmed.match(/^(?:по\s+будням|каждый\s+будний\s+день)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (recurringWeekdaysMatch) {
     const hours = parseInt(recurringWeekdaysMatch[1], 10);
     const minutes = parseInt(recurringWeekdaysMatch[2], 10);
-    const reminderText = recurringWeekdaysMatch[3].trim();
+    const reminderText = (recurringWeekdaysMatch[3] || '').trim();
     let targetDate = calculateNextOccurrenceTime(userNow, hours, minutes);
     // If weekend, skip to Monday
     while (targetDate.getDay() === 0 || targetDate.getDay() === 6) {
@@ -83,12 +83,12 @@ export function parseReminderInput(
   }
 
   // RECURRING WEEKLY: "каждый понедельник в 10:00 [текст]", "каждую пятницу в 18:00 [текст]"
-  const recurringWeeklyMatch = trimmed.match(/^(?:каждый|каждую)\s+(понедельник|вторник|среду|среда|четверг|пятницу|пятница|субботу|суббота|воскресенье|пн|вт|ср|чт|пт|сб|вс)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const recurringWeeklyMatch = trimmed.match(/^(?:каждый|каждую)\s+(понедельник|вторник|среду|среда|четверг|пятницу|пятница|субботу|суббота|воскресенье|пн|вт|ср|чт|пт|сб|вс)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (recurringWeeklyMatch) {
     const dayStr = recurringWeeklyMatch[1].toLowerCase();
     const hours = parseInt(recurringWeeklyMatch[2], 10);
     const minutes = parseInt(recurringWeeklyMatch[3], 10);
-    const reminderText = recurringWeeklyMatch[4].trim();
+    const reminderText = (recurringWeeklyMatch[4] || '').trim();
     const targetDayOfWeek = DAYS_OF_WEEK_RU[dayStr];
     if (targetDayOfWeek !== undefined) {
       const targetDate = calculateNextDayOfWeekTime(userNow, targetDayOfWeek, hours, minutes);
@@ -102,12 +102,34 @@ export function parseReminderInput(
     }
   }
 
-  // 2. RELATIVE TIME: "через 15 минут [текст]", "через 2 часа [текст]", "через 3 дня [текст]"
-  const relativeMatch = trimmed.match(/^(?:через|in)\s+(\d+)\s+(минут|минуту|минуты|мин|min|minutes|час|часа|часов|ч|hours|hour|h|день|дня|дней|д|days|day)\s+(.+)$/i);
+  // 2. RELATIVE TIME: "через 15 минут [текст]", "через 2 часа [текст]", "через 3 дня [в 15:00] [текст]"
+  const relativeDaysWithTimeMatch = trimmed.match(
+    /^(?:через|in)\s+(\d+)\s+(?:день|дня|дней|д|days|day)\s+(?:в\s+|at\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i
+  );
+  if (relativeDaysWithTimeMatch) {
+    const daysAmount = parseInt(relativeDaysWithTimeMatch[1], 10);
+    const hours = parseInt(relativeDaysWithTimeMatch[2], 10);
+    const minutes = parseInt(relativeDaysWithTimeMatch[3], 10);
+    const reminderText = (relativeDaysWithTimeMatch[4] || '').trim();
+
+    let targetDate = addDays(userNow, daysAmount);
+    targetDate = setHours(setMinutes(setSeconds(setMilliseconds(targetDate, 0), 0), minutes), hours);
+
+    return {
+      text: reminderText,
+      dueDate: fromZonedTime(targetDate, timezone),
+      recurrence: 'none',
+      matchedPattern: 'relative_days_with_time',
+    };
+  }
+
+  const relativeMatch = trimmed.match(
+    /^(?:через|in)\s+(\d+)\s+(минут|минуту|минуты|мин|min|minutes|час|часа|часов|ч|hours|hour|h|день|дня|дней|д|days|day)(?:\s+(.*))?$/i
+  );
   if (relativeMatch) {
     const amount = parseInt(relativeMatch[1], 10);
     const unitStr = relativeMatch[2].toLowerCase();
-    const reminderText = relativeMatch[3].trim();
+    const reminderText = (relativeMatch[3] || '').trim();
     let targetDate = new Date(userNow);
 
     if (unitStr.startsWith('мин') || unitStr.startsWith('min') || unitStr === 'м') {
@@ -127,12 +149,12 @@ export function parseReminderInput(
   }
 
   // 3. SPECIFIC DAY PHRASES: "сегодня в 18:30 [текст]", "завтра в 09:00 [текст]", "послезавтра в 14:00 [текст]"
-  const dayPhraseMatch = trimmed.match(/^(сегодня|завтра|послезавтра|today|tomorrow)\s+(?:в\s+|at\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const dayPhraseMatch = trimmed.match(/^(сегодня|завтра|послезавтра|today|tomorrow)\s+(?:в\s+|at\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (dayPhraseMatch) {
     const dayWord = dayPhraseMatch[1].toLowerCase();
     const hours = parseInt(dayPhraseMatch[2], 10);
     const minutes = parseInt(dayPhraseMatch[3], 10);
-    const reminderText = dayPhraseMatch[4].trim();
+    const reminderText = (dayPhraseMatch[4] || '').trim();
 
     let targetDate = new Date(userNow);
     if (dayWord === 'завтра' || dayWord === 'tomorrow') {
@@ -151,12 +173,12 @@ export function parseReminderInput(
   }
 
   // 4. DAY OF WEEK PHRASES: "в понедельник в 10:00 [текст]", "во вторник в 15:00 [текст]"
-  const dayOfWeekMatch = trimmed.match(/^(?:в|во)\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|пн|вт|ср|чт|пт|сб|вс)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const dayOfWeekMatch = trimmed.match(/^(?:в|во)\s+(понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|пн|вт|ср|чт|пт|сб|вс)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (dayOfWeekMatch) {
     const dayStr = dayOfWeekMatch[1].toLowerCase();
     const hours = parseInt(dayOfWeekMatch[2], 10);
     const minutes = parseInt(dayOfWeekMatch[3], 10);
-    const reminderText = dayOfWeekMatch[4].trim();
+    const reminderText = (dayOfWeekMatch[4] || '').trim();
 
     const targetDayOfWeek = DAYS_OF_WEEK_RU[dayStr];
     if (targetDayOfWeek !== undefined) {
@@ -171,7 +193,7 @@ export function parseReminderInput(
   }
 
   // 5. NUMERIC DATE: "15.09 в 12:00 [текст]", "15.09.2026 12:00 [текст]"
-  const numericDateMatch = trimmed.match(/^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const numericDateMatch = trimmed.match(/^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (numericDateMatch) {
     const day = parseInt(numericDateMatch[1], 10);
     const month = parseInt(numericDateMatch[2], 10) - 1; // 0-indexed
@@ -179,7 +201,7 @@ export function parseReminderInput(
     if (year < 100) year += 2000;
     const hours = parseInt(numericDateMatch[4], 10);
     const minutes = parseInt(numericDateMatch[5], 10);
-    const reminderText = numericDateMatch[6].trim();
+    const reminderText = (numericDateMatch[6] || '').trim();
 
     let targetDate = new Date(year, month, day, hours, minutes, 0, 0);
     // If date passed without specified year, move to next year
@@ -196,14 +218,14 @@ export function parseReminderInput(
   }
 
   // 6. TEXT MONTH: "15 сентября в 10:00 [текст]"
-  const textMonthMatch = trimmed.match(/^(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const textMonthMatch = trimmed.match(/^(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|янв|фев|мар|апр|май|июн|июл|авг|сен|окт|ноя|дек)\s+(?:в\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (textMonthMatch) {
     const day = parseInt(textMonthMatch[1], 10);
     const monthStr = textMonthMatch[2].toLowerCase();
     const month = MONTHS_RU[monthStr];
     const hours = parseInt(textMonthMatch[3], 10);
     const minutes = parseInt(textMonthMatch[4], 10);
-    const reminderText = textMonthMatch[5].trim();
+    const reminderText = (textMonthMatch[5] || '').trim();
 
     if (month !== undefined) {
       let year = userNow.getFullYear();
@@ -221,11 +243,11 @@ export function parseReminderInput(
   }
 
   // 7. TIME ONLY: "в 19:00 [текст]" or "19:00 [текст]"
-  const timeOnlyMatch = trimmed.match(/^(?:в\s+|at\s+)?(\d{1,2})[:.-](\d{2})\s+(.+)$/i);
+  const timeOnlyMatch = trimmed.match(/^(?:в\s+|at\s+)?(\d{1,2})[:.-](\d{2})(?:\s+(.*))?$/i);
   if (timeOnlyMatch) {
     const hours = parseInt(timeOnlyMatch[1], 10);
     const minutes = parseInt(timeOnlyMatch[2], 10);
-    const reminderText = timeOnlyMatch[3].trim();
+    const reminderText = (timeOnlyMatch[3] || '').trim();
 
     const targetDate = calculateNextOccurrenceTime(userNow, hours, minutes);
     return {
@@ -262,4 +284,26 @@ function calculateNextDayOfWeekTime(now: Date, targetDayOfWeek: number, hours: n
 
 function pad(num: number): string {
   return num.toString().padStart(2, '0');
+}
+
+/**
+ * Formats a Date object into human-friendly Russian string with day of week:
+ * e.g. "Воскресенье, 15 января в 15:00" or "Четверг, 7 сентября 2026 г. в 10:30"
+ */
+export function formatFullRussianDate(date: Date, timezone: string = 'UTC'): string {
+  const zoned = toZonedTime(date, timezone);
+  const weekdayFormatter = new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, weekday: 'long' });
+  const dateFormatter = new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, day: 'numeric', month: 'long' });
+  const timeFormatter = new Intl.DateTimeFormat('ru-RU', { timeZone: timezone, hour: '2-digit', minute: '2-digit' });
+
+  const weekday = weekdayFormatter.format(date);
+  const capitalizedWeekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+  const dateStr = dateFormatter.format(date);
+  const timeStr = timeFormatter.format(date);
+
+  const currentYear = new Date().getFullYear();
+  const reminderYear = zoned.getFullYear();
+  const yearStr = reminderYear !== currentYear ? ` ${reminderYear} г.` : '';
+
+  return `${capitalizedWeekday}, ${dateStr}${yearStr} в ${timeStr}`;
 }

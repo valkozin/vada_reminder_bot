@@ -2,10 +2,10 @@
 
 import { useState } from 'react';
 import { Bell, CheckCircle2, Clock, Cpu, Database, Key, Server, Terminal, Zap } from 'lucide-react';
-import { parseReminderInput } from '@/lib/parser';
+import { parseReminderInput, formatFullRussianDate } from '@/lib/parser';
 
 export default function Dashboard() {
-  const [testInput, setTestInput] = useState('завтра в 15:30 полить цветы');
+  const [testInput, setTestInput] = useState('через 2 дня в 15:00 забрать посылку');
   const [testTz, setTestTz] = useState('Europe/Moscow');
   const [parseResult, setParseResult] = useState<any>(null);
 
@@ -88,7 +88,8 @@ export default function Dashboard() {
                   <span>РЕЗУЛЬТАТ РАСПОЗНАВАНИЯ</span>
                   <span className="uppercase">{parseResult?.matchedPattern || 'Matched'}</span>
                 </div>
-                <div><span className="text-slate-500">Текст задачи:</span> <span className="text-emerald-400 font-semibold">{parseResult?.text}</span></div>
+                <div><span className="text-slate-500">Текст задачи:</span> <span className="text-emerald-400 font-semibold">{parseResult?.text || '(пусто — только перенос времени)'}</span></div>
+                <div><span className="text-slate-500">Ответ в боте (с днем недели):</span> <span className="text-amber-300 font-semibold">{formatFullRussianDate(parseResult?.dueDate, testTz)}</span></div>
                 <div><span className="text-slate-500">Дата отправки (UTC):</span> <span className="text-sky-300">{parseResult?.dueDate?.toISOString()}</span></div>
                 <div><span className="text-slate-500">Повторение:</span> <span className="text-purple-300 font-bold">{parseResult?.recurrence}</span></div>
               </div>

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllActiveReminders, deleteReminder, saveReminder } from '@/lib/db';
+import { getAllActiveReminders, saveReminder, markReminderFired } from '@/lib/db';
 import { bot } from '@/lib/bot';
 import { Reminder } from '@/lib/types';
+import { formatFullRussianDate } from '@/lib/parser';
 import { addDays, addWeeks } from 'date-fns';
 import { InlineKeyboard } from 'grammy';
 
@@ -29,24 +30,32 @@ export async function GET(req: NextRequest) {
 
   for (const reminder of dueReminders) {
     try {
-      // Send Telegram notification
+      // Skeddy-style Inline Keyboard
       const keyboard = new InlineKeyboard()
-        .text('⏰ +10 мин', `snz:${reminder.id}:10`)
+        .text('⏰ +15 мин', `snz:${reminder.id}:15`)
         .text('⏰ +1 час', `snz:${reminder.id}:60`)
-        .text('✅ Удалить', `del:${reminder.id}`);
+        .row()
+        .text('⏰ +3 часа', `snz:${reminder.id}:180`)
+        .text('📅 Завтра', `snz:${reminder.id}:1440`)
+        .row()
+        .text('✍️ Напомнить снова...', `resched:${reminder.id}`)
+        .text('✅ Выполнено', `del:${reminder.id}`);
+
+      const scheduledFormatted = formatFullRussianDate(new Date(reminder.dueDate), reminder.timezone || 'Europe/Moscow');
 
       await bot.api.sendMessage(
         reminder.chatId,
-        `🔔 *НАПОМИНАНИЕ!*\n\n📌 ${reminder.text}\n\n⏰ _Назначено на: ${new Date(reminder.dueDate).toLocaleString('ru-RU')}_`,
+        `🔔 *НАПОМИНАНИЕ!*\n\n📌 *${reminder.text}*\n\n⏰ _Было назначено на:_ ${scheduledFormatted}`,
         {
           parse_mode: 'Markdown',
           reply_markup: keyboard,
         }
       );
 
-      // Handle recurrence or deletion
+      // Handle recurrence or deactivate non-recurring reminder from active queue
       if (reminder.recurrence === 'none') {
-        await deleteReminder(reminder.id, reminder.userId);
+        // Keeps the reminder accessible for snooze/reschedule callbacks while preventing cron loop
+        await markReminderFired(reminder.id);
       } else {
         const nextDueDate = calculateNextRecurrenceDate(reminder);
         const updatedReminder: Reminder = {
