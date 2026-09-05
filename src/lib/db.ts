@@ -395,27 +395,53 @@ export async function deleteAllUserReminders(userId: number): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
-// Pending reschedule state ("✍️ Другое время")
+// Pending action: the bot asked a question and the next message is the answer
+// ("🕐 Изменить время" / "✏️ Изменить текст").
 // ---------------------------------------------------------------------------
 
-export async function setPendingReschedule(userId: number, reminderId: string): Promise<void> {
+export type PendingActionKind = 'time' | 'text';
+
+export interface PendingAction {
+  kind: PendingActionKind;
+  reminderId: string;
+}
+
+/** Expires on its own, so an abandoned prompt cannot hijack later messages. */
+const PENDING_TTL_SECONDS = 900;
+
+export async function setPendingAction(
+  userId: number,
+  kind: PendingActionKind,
+  reminderId: string
+): Promise<void> {
+  const value = `${kind}:${reminderId}`;
   const redis = getRedisClient();
   if (redis) {
-    await redis.set(`user:${userId}:pending_reschedule`, reminderId, { ex: 900 });
+    await redis.set(`user:${userId}:pending_reschedule`, value, { ex: PENDING_TTL_SECONDS });
   } else {
-    memoryStore.pending.set(userId, reminderId);
+    memoryStore.pending.set(userId, value);
   }
 }
 
-export async function getPendingReschedule(userId: number): Promise<string | null> {
+export async function getPendingAction(userId: number): Promise<PendingAction | null> {
   const redis = getRedisClient();
-  if (redis) {
-    return await redis.get<string>(`user:${userId}:pending_reschedule`);
+  const raw = redis
+    ? await redis.get<string>(`user:${userId}:pending_reschedule`)
+    : memoryStore.pending.get(userId) || null;
+
+  if (!raw) return null;
+
+  const separator = raw.indexOf(':');
+  const kind = separator === -1 ? '' : raw.slice(0, separator);
+
+  if (kind === 'time' || kind === 'text') {
+    return { kind, reminderId: raw.slice(separator + 1) };
   }
-  return memoryStore.pending.get(userId) || null;
+  // Records written before actions were named are all reschedules.
+  return { kind: 'time', reminderId: raw };
 }
 
-export async function clearPendingReschedule(userId: number): Promise<void> {
+export async function clearPendingAction(userId: number): Promise<void> {
   const redis = getRedisClient();
   if (redis) {
     await redis.del(`user:${userId}:pending_reschedule`);

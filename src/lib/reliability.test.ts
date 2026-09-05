@@ -184,7 +184,38 @@ console.log('\n--- 7. Сработавшие напоминания ---');
   );
 }
 
-console.log('\n--- 8. Смена источника ключа ---');
+console.log('\n--- 8. Ожидаемое действие (редактирование из списка) ---');
+{
+  const future = new Date(Date.now() + 3600_000).toISOString();
+  await db.saveReminder(makeReminder('rem_pending', ALICE, 'Старый текст', future));
+
+  check('без запроса нет ожидаемого действия', (await db.getPendingAction(ALICE)) === null);
+
+  await db.setPendingAction(ALICE, 'text', 'rem_pending');
+  const textPending = await db.getPendingAction(ALICE);
+  check('запомнено изменение текста', textPending?.kind === 'text');
+  check('и правильный id напоминания', textPending?.reminderId === 'rem_pending');
+
+  await db.setPendingAction(ALICE, 'time', 'rem_pending');
+  const timePending = await db.getPendingAction(ALICE);
+  check('запомнено изменение времени', timePending?.kind === 'time');
+
+  // Editing the text must not disturb the schedule, and vice versa.
+  const before = await db.getOwnedReminder('rem_pending', ALICE);
+  await db.saveReminder({ ...before!, text: 'Новый текст' });
+  const after = await db.getOwnedReminder('rem_pending', ALICE);
+  check('текст изменён', after?.text === 'Новый текст');
+  check('время не тронуто', after?.dueDate === before?.dueDate);
+  check('после правки текста напоминание осталось в очереди', after?.status === 'active');
+  check('чужой пользователь не видит отредактированное', (await db.getOwnedReminder('rem_pending', BOB)) === null);
+
+  check('чужое ожидаемое действие не видно', (await db.getPendingAction(BOB)) === null);
+
+  await db.clearPendingAction(ALICE);
+  check('отмена сбрасывает действие', (await db.getPendingAction(ALICE)) === null);
+}
+
+console.log('\n--- 9. Смена источника ключа ---');
 {
   const secret = 'Написанное на старом ключе';
   const oldBlob = encryptForUser(ALICE, secret, 'rem_rotate');
