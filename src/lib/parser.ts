@@ -186,6 +186,16 @@ function stripFillers(input: string): string {
   const PRONOUNS = new RegExp(`^\\s*(?:мне|нам|пожалуйста|плз|плиз)${FILLER_RB}`, 'i');
   const CONNECTIVES = new RegExp(`^\\s*(?:что\\s+бы|чтобы|что|про|о)${FILLER_RB}`, 'i');
 
+  // The imperative "напомни" is a command word wherever it stands, not only at
+  // the front: in "тест 6 сентября тест2 напомни" the date is cut out and the
+  // verb would otherwise be left stranded in the middle of the task text.
+  // Only the imperative forms — the noun "напоминание" can be real content
+  // ("отправить напоминание коллегам"), so it is stripped from the front only.
+  const IMPERATIVE_ANYWHERE = new RegExp(
+    `(?<![0-9a-zа-яё-])(?:напомни(?:ть|шь|те)?|напоминай)(?:-ка)?${FILLER_RB}`,
+    'gi'
+  );
+
   let text = input.trim();
   let changed = true;
 
@@ -198,6 +208,8 @@ function stripFillers(input: string): string {
       .replace(PRONOUNS, '')
       .replace(/^\s*о\s+том\s*,?\s*/i, '')
       .replace(CONNECTIVES, '')
+      .replace(IMPERATIVE_ANYWHERE, ' ')
+      .replace(/\s{2,}/g, ' ')
       .trim();
     changed = text !== before;
   }

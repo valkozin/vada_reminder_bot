@@ -134,6 +134,36 @@ console.log('\n--- 3c. Задержанное сообщение отсчиты�
   );
 }
 
+console.log('\n--- 3d. «напомни» в середине фразы и две даты ---');
+{
+  // Reported case: the first date wins, the rest stays as text, but the command
+  // word must not be left stranded in the middle of it.
+  const two = parseReminderInput('тест 6 сентября тест2 напомни 7 сентября', TZ, NOW);
+  check(
+    'берётся первая дата (6 сентября)',
+    two?.dueDate.toISOString() === '2026-09-06T07:00:00.000Z',
+    `получено ${two?.dueDate.toISOString()}`
+  );
+  check('«напомни» убрано из середины текста', two?.text === 'Тест тест2 7 сентября', `получено «${two?.text}»`);
+  check(
+    'остаток текста распознаётся как дата — бот предупредит',
+    parseReminderInput(two!.text, TZ, NOW) !== null
+  );
+}
+
+expectParse('купить хлеб напомнить завтра в 10', '2026-09-06T08:00:00.000Z', 'Купить хлеб');
+expectParse('позвонить врачу не забудь завтра в 11', '2026-09-06T09:00:00.000Z', 'Позвонить врачу не забудь');
+
+// The noun stays: it can be genuine task content.
+expectParse('отправить напоминание коллегам завтра в 10', '2026-09-06T08:00:00.000Z', 'Отправить напоминание коллегам');
+
+// Ordinary single-date input must NOT look ambiguous.
+{
+  const plain = parseReminderInput('купить 2 билета завтра в 15:00', TZ, NOW);
+  check('обычный текст не считается второй датой', parseReminderInput(plain!.text, TZ, NOW) === null,
+    `получено ${JSON.stringify(parseReminderInput(plain!.text, TZ, NOW)?.text)}`);
+}
+
 console.log('\n--- 4. Повторяющиеся ---');
 {
   const daily = parseReminderInput('каждый день в 09:00 зарядка', TZ, NOW);
