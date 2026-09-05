@@ -57,13 +57,11 @@ const BTN_LIST = '📋 Мои напоминания';
 const BTN_TIMEZONE = '🌍 Часовой пояс';
 const BTN_HELP = '❓ Помощь';
 
-const mainKeyboard = new Keyboard()
-  .text(BTN_LIST)
-  .row()
-  .text(BTN_TIMEZONE)
-  .text(BTN_HELP)
-  .resized()
-  .persistent();
+// Deliberately NOT .persistent(): that flag removes the client's toggle for
+// hiding the custom keyboard, and on Android the back button then spends its
+// press on the keyboard instead of leaving the chat. Without it the buttons are
+// still shown by default, they can just be collapsed like any other bot's.
+const mainKeyboard = new Keyboard().text(BTN_LIST).row().text(BTN_TIMEZONE).text(BTN_HELP).resized();
 
 /** Buttons attached to a single reminder (creation, snooze, delivery). */
 function reminderKeyboard(reminderId: string, includeSnooze = true): InlineKeyboard {
