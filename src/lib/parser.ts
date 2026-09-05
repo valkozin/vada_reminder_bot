@@ -104,6 +104,57 @@ const RB = '(?![0-9a-zа-яё])';
 /** Clock time: "15:30", "15.30", "15-30". */
 const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
 
+/**
+ * Time written after a date, in any of the forms people actually use:
+ * "в 15:30", "15:30", "в 10", "в 10 часов", "в 7 вечера".
+ *
+ * Minutes may be omitted, but only with the preposition "в". Without that
+ * guard a bare number after a date would be swallowed as an hour, turning
+ * "завтра 5 яблок купить" into 05:00.
+ *
+ * Captures four groups: hh, mm, bare hour, part of the day.
+ */
+const TIME_REQ =
+  `(?:\\s+(?:в\\s+)?(\\d{1,2})[:.\\-](\\d{2})${RB}` +
+  `|\\s+в\\s+(\\d{1,2})(?:\\s*час(?:ов|а)?)?(?:\\s+(${DAY_PARTS}))?${RB})`;
+
+/** Same, but the whole time may be missing (the caller then applies a default). */
+const TIME_OPT = `${TIME_REQ}?`;
+
+interface ClockTime {
+  hours: number;
+  minutes: number;
+}
+
+/**
+ * Reads the four groups captured by TIME_REQ / TIME_OPT.
+ *
+ * Returns `undefined` when no time was written (use the default), and `null`
+ * when one was written but is out of range, so the caller rejects the match
+ * instead of scheduling something nonsensical.
+ */
+function readTimeGroups(
+  hh: string | undefined,
+  mm: string | undefined,
+  bare: string | undefined,
+  part: string | undefined
+): ClockTime | null | undefined {
+  if (hh !== undefined) {
+    const hours = +hh;
+    const minutes = +(mm ?? 0);
+    return isValidClock(hours, minutes) ? { hours, minutes } : null;
+  }
+
+  if (bare !== undefined) {
+    let hours = +bare;
+    // "в 7 вечера" -> 19:00, "в 9 утра" -> 09:00
+    if (part && DAY_PARTS_RU[part.toLowerCase()] >= 13 && hours < 12) hours += 12;
+    return isValidClock(hours, 0) ? { hours, minutes: 0 } : null;
+  }
+
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Text cleanup
 // ---------------------------------------------------------------------------
@@ -115,20 +166,25 @@ const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
  * so "через минуту напомни съесть" and "напомни съесть через минуту" behave alike.
  */
 function stripFillers(input: string): string {
-  // Reminder verbs that carry no task meaning on their own.
+  // A hyphen must not end a filler word: without this "что-то" is read as the
+  // connective "что" plus a stray "-то", and "напомни что-то" loses its task.
+  const FILLER_RB = '(?![0-9a-zа-яё-])';
+
+  // Reminder verbs that carry no task meaning on their own ("напомни-ка" too).
   const VERBS = new RegExp(
-    `^(?:напомни(?:ть|шь|те)?|напоминай|напоминание|напоминалка|разбуди|нужно|надо|не\\s+забыть|не\\s+забудь)${RB}`,
+    `^(?:напомни(?:ть|шь|те)?|напоминай|напоминание|напоминалка|разбуди|нужно|надо|` +
+      `не\\s+забыть|не\\s+забудь)(?:-ка)?${FILLER_RB}`,
     'i'
   );
   // "поставь"/"создай" only count as filler together with their object, so
   // "поставь чайник через 5 минут" keeps the word "поставь".
   const VERBS_WITH_OBJECT = new RegExp(
     `^(?:поставь|постав(?:ить)?|создай|создать|добавь|добавить|запланируй|запиши)\\s+` +
-      `(?:напоминание|напоминалку|задачу|задание|таск)${RB}`,
+      `(?:напоминание|напоминалку|задачу|задание|таск)${FILLER_RB}`,
     'i'
   );
-  const PRONOUNS = new RegExp(`^\\s*(?:мне|нам|пожалуйста|плз|плиз)${RB}`, 'i');
-  const CONNECTIVES = new RegExp(`^\\s*(?:что\\s+бы|чтобы|что|про|о)${RB}`, 'i');
+  const PRONOUNS = new RegExp(`^\\s*(?:мне|нам|пожалуйста|плз|плиз)${FILLER_RB}`, 'i');
+  const CONNECTIVES = new RegExp(`^\\s*(?:что\\s+бы|чтобы|что|про|о)${FILLER_RB}`, 'i');
 
   let text = input.trim();
   let changed = true;
@@ -238,52 +294,57 @@ export function parseReminderInput(
   // --- 1. RECURRING DAILY: "каждый день в 09:00", "ежедневно в 9:00" ---------
   const daily = findAndCut(
     trimmed,
-    new RegExp(`${LB}(?:кажд(?:ый|ое)\\s+(?:день|сутки)|ежедневно)\\s*(?:в\\s+)?${CLOCK}${RB}`, 'i')
+    new RegExp(`${LB}(?:кажд(?:ый|ое)\\s+(?:день|сутки)|ежедневно)${TIME_REQ}`, 'i')
   );
-  if (daily && isValidClock(+daily.m[1], +daily.m[2])) {
-    const hours = +daily.m[1];
-    const minutes = +daily.m[2];
-    return finish(nextOccurrence(userNow, hours, minutes), daily.rest, 'daily', 'recurring_daily', {
-      timeStr: `${pad(hours)}:${pad(minutes)}`,
-    });
+  if (daily) {
+    const time = readTimeGroups(daily.m[1], daily.m[2], daily.m[3], daily.m[4]);
+    if (time) {
+      return finish(
+        nextOccurrence(userNow, time.hours, time.minutes),
+        daily.rest,
+        'daily',
+        'recurring_daily',
+        { timeStr: `${pad(time.hours)}:${pad(time.minutes)}` }
+      );
+    }
   }
 
   // --- 2. RECURRING WEEKDAYS: "по будням в 09:00" ---------------------------
   const weekdays = findAndCut(
     trimmed,
     new RegExp(
-      `${LB}(?:по\\s+будням|кажд(?:ый|ые)\\s+будни(?:й\\s+день)?|по\\s+рабочим\\s+дням)\\s*(?:в\\s+)?${CLOCK}${RB}`,
+      `${LB}(?:по\\s+будням|кажд(?:ый|ые)\\s+будни(?:й\\s+день)?|по\\s+рабочим\\s+дням)${TIME_REQ}`,
       'i'
     )
   );
-  if (weekdays && isValidClock(+weekdays.m[1], +weekdays.m[2])) {
-    const hours = +weekdays.m[1];
-    const minutes = +weekdays.m[2];
-    let target = nextOccurrence(userNow, hours, minutes);
-    while (target.getDay() === 0 || target.getDay() === 6) {
-      target = addDays(target, 1);
+  if (weekdays) {
+    const time = readTimeGroups(weekdays.m[1], weekdays.m[2], weekdays.m[3], weekdays.m[4]);
+    if (time) {
+      let target = nextOccurrence(userNow, time.hours, time.minutes);
+      while (target.getDay() === 0 || target.getDay() === 6) {
+        target = addDays(target, 1);
+      }
+      return finish(target, weekdays.rest, 'weekdays', 'recurring_weekdays', {
+        timeStr: `${pad(time.hours)}:${pad(time.minutes)}`,
+      });
     }
-    return finish(target, weekdays.rest, 'weekdays', 'recurring_weekdays', {
-      timeStr: `${pad(hours)}:${pad(minutes)}`,
-    });
   }
 
   // --- 3. RECURRING WEEKLY: "каждую пятницу в 18:00" ------------------------
   const weekly = findAndCut(
     trimmed,
-    new RegExp(`${LB}кажд(?:ый|ую|ое)\\s+(${DAYS})${RB}\\s*(?:в\\s+)?${CLOCK}${RB}`, 'i')
+    new RegExp(`${LB}кажд(?:ый|ую|ое)\\s+(${DAYS})${RB}${TIME_REQ}`, 'i')
   );
-  if (weekly && isValidClock(+weekly.m[2], +weekly.m[3])) {
+  if (weekly) {
     const dayOfWeek = DAYS_OF_WEEK_RU[weekly.m[1].toLowerCase()];
-    const hours = +weekly.m[2];
-    const minutes = +weekly.m[3];
-    if (dayOfWeek !== undefined) {
+    const time = readTimeGroups(weekly.m[2], weekly.m[3], weekly.m[4], weekly.m[5]);
+    if (dayOfWeek !== undefined && time) {
       return finish(
-        nextDayOfWeek(userNow, dayOfWeek, hours, minutes),
+        nextDayOfWeek(userNow, dayOfWeek, time.hours, time.minutes),
         weekly.rest,
         'weekly',
         'recurring_weekly',
-        { dayOfWeek, timeStr: `${pad(hours)}:${pad(minutes)}` }
+        { dayOfWeek, timeStr: `${pad(time.hours)}:${pad(time.minutes)}` }
       );
     }
   }
@@ -291,18 +352,21 @@ export function parseReminderInput(
   // --- 4. RECURRING MONTHLY: "каждое 15 число в 10:00" ----------------------
   const monthly = findAndCut(
     trimmed,
-    new RegExp(`${LB}кажд(?:ый|ое|ого)\\s+(\\d{1,2})\\s*числ[оаеу]?${RB}\\s*(?:в\\s+)?${CLOCK}${RB}`, 'i')
+    new RegExp(`${LB}кажд(?:ый|ое|ого)\\s+(\\d{1,2})\\s*числ[оаеу]?${RB}${TIME_REQ}`, 'i')
   );
-  if (monthly && isValidClock(+monthly.m[2], +monthly.m[3])) {
+  if (monthly) {
     const dayOfMonth = +monthly.m[1];
-    const hours = +monthly.m[2];
-    const minutes = +monthly.m[3];
-    if (dayOfMonth >= 1 && dayOfMonth <= 31) {
-      let target = atTime(new Date(userNow.getFullYear(), userNow.getMonth(), dayOfMonth), hours, minutes);
+    const time = readTimeGroups(monthly.m[2], monthly.m[3], monthly.m[4], monthly.m[5]);
+    if (time && dayOfMonth >= 1 && dayOfMonth <= 31) {
+      let target = atTime(
+        new Date(userNow.getFullYear(), userNow.getMonth(), dayOfMonth),
+        time.hours,
+        time.minutes
+      );
       if (target <= userNow) target = addMonths(target, 1);
       return finish(target, monthly.rest, 'monthly', 'recurring_monthly', {
         dayOfMonth,
-        timeStr: `${pad(hours)}:${pad(minutes)}`,
+        timeStr: `${pad(time.hours)}:${pad(time.minutes)}`,
       });
     }
   }
@@ -310,12 +374,20 @@ export function parseReminderInput(
   // --- 5. RELATIVE DAYS WITH TIME: "через 2 дня в 15:00" --------------------
   const relDaysAtTime = findAndCut(
     trimmed,
-    new RegExp(`${LB}через\\s+(?:${COUNT}\\s+)?(${DAY_UNITS_ALT})${RB}\\s+(?:в\\s+)?${CLOCK}${RB}`, 'i')
+    new RegExp(`${LB}через\\s+(?:${COUNT}\\s+)?(${DAY_UNITS_ALT})${RB}${TIME_REQ}`, 'i')
   );
-  if (relDaysAtTime && isValidClock(+relDaysAtTime.m[3], +relDaysAtTime.m[4])) {
-    const days = toCount(relDaysAtTime.m[1]);
-    const target = atTime(addDays(userNow, days), +relDaysAtTime.m[3], +relDaysAtTime.m[4]);
-    return finish(target, relDaysAtTime.rest, 'none', 'relative_days_with_time');
+  if (relDaysAtTime) {
+    const time = readTimeGroups(
+      relDaysAtTime.m[3],
+      relDaysAtTime.m[4],
+      relDaysAtTime.m[5],
+      relDaysAtTime.m[6]
+    );
+    if (time) {
+      const days = toCount(relDaysAtTime.m[1]);
+      const target = atTime(addDays(userNow, days), time.hours, time.minutes);
+      return finish(target, relDaysAtTime.rest, 'none', 'relative_days_with_time');
+    }
   }
 
   // --- 6. RELATIVE OFFSET: "через минуту", "через 5 минут", "через 1 час 30 минут" ---
@@ -347,15 +419,19 @@ export function parseReminderInput(
   // --- 7. DAY PHRASE WITH TIME: "завтра в 15:00", "сегодня вечером" ---------
   const dayPhraseAtTime = findAndCut(
     trimmed,
-    new RegExp(`${LB}(сегодня|завтра|послезавтра)${RB}\\s+(?:в\\s+)?${CLOCK}${RB}`, 'i')
+    new RegExp(`${LB}(сегодня|завтра|послезавтра)${RB}${TIME_REQ}`, 'i')
   );
-  if (dayPhraseAtTime && isValidClock(+dayPhraseAtTime.m[2], +dayPhraseAtTime.m[3])) {
-    const target = atTime(
-      shiftByDayWord(userNow, dayPhraseAtTime.m[1]),
-      +dayPhraseAtTime.m[2],
-      +dayPhraseAtTime.m[3]
+  if (dayPhraseAtTime) {
+    const time = readTimeGroups(
+      dayPhraseAtTime.m[2],
+      dayPhraseAtTime.m[3],
+      dayPhraseAtTime.m[4],
+      dayPhraseAtTime.m[5]
     );
-    return finish(target, dayPhraseAtTime.rest, 'none', 'day_phrase');
+    if (time) {
+      const target = atTime(shiftByDayWord(userNow, dayPhraseAtTime.m[1]), time.hours, time.minutes);
+      return finish(target, dayPhraseAtTime.rest, 'none', 'day_phrase');
+    }
   }
 
   const dayPhraseAtPart = findAndCut(
@@ -371,13 +447,14 @@ export function parseReminderInput(
   // --- 8. DAY OF WEEK: "в понедельник в 10:00", "в пятницу вечером" ---------
   const dowAtTime = findAndCut(
     trimmed,
-    new RegExp(`${LB}(?:в|во)\\s+(${DAYS})${RB}\\s+(?:в\\s+)?${CLOCK}${RB}`, 'i')
+    new RegExp(`${LB}(?:в|во)\\s+(${DAYS})${RB}${TIME_REQ}`, 'i')
   );
-  if (dowAtTime && isValidClock(+dowAtTime.m[2], +dowAtTime.m[3])) {
+  if (dowAtTime) {
     const dayOfWeek = DAYS_OF_WEEK_RU[dowAtTime.m[1].toLowerCase()];
-    if (dayOfWeek !== undefined) {
+    const time = readTimeGroups(dowAtTime.m[2], dowAtTime.m[3], dowAtTime.m[4], dowAtTime.m[5]);
+    if (dayOfWeek !== undefined && time) {
       return finish(
-        nextDayOfWeek(userNow, dayOfWeek, +dowAtTime.m[2], +dowAtTime.m[3]),
+        nextDayOfWeek(userNow, dayOfWeek, time.hours, time.minutes),
         dowAtTime.rest,
         'none',
         'day_of_week'
@@ -405,16 +482,17 @@ export function parseReminderInput(
   // --- 9. NUMERIC DATE: "15.09 в 12:00", "25.12.2026 12:00", "15.09" -------
   const numericDate = findAndCut(
     trimmed,
-    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?(?:\\s+(?:в\\s+)?${CLOCK})?${RB}`, 'i')
+    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${TIME_OPT}`, 'i')
   );
   if (numericDate) {
     const day = +numericDate.m[1];
     const month = +numericDate.m[2] - 1;
-    const hasTime = numericDate.m[4] !== undefined;
-    const hours = hasTime ? +numericDate.m[4] : DEFAULT_HOUR;
-    const minutes = hasTime ? +numericDate.m[5] : DEFAULT_MINUTE;
+    const time = readTimeGroups(numericDate.m[4], numericDate.m[5], numericDate.m[6], numericDate.m[7]);
+    const hours = time ? time.hours : DEFAULT_HOUR;
+    const minutes = time ? time.minutes : DEFAULT_MINUTE;
 
-    if (day >= 1 && day <= 31 && month >= 0 && month <= 11 && isValidClock(hours, minutes)) {
+    // `time === null` means a time was written but is out of range.
+    if (time !== null && day >= 1 && day <= 31 && month >= 0 && month <= 11) {
       let year = numericDate.m[3] ? +numericDate.m[3] : userNow.getFullYear();
       if (year < 100) year += 2000;
       let target = atTime(new Date(year, month, day), hours, minutes);
@@ -429,16 +507,16 @@ export function parseReminderInput(
   // --- 10. TEXT MONTH: "15 сентября в 10:00", "15 сентября" ----------------
   const textMonth = findAndCut(
     trimmed,
-    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?(?:\\s+(?:в\\s+)?${CLOCK})?${RB}`, 'i')
+    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${TIME_OPT}`, 'i')
   );
   if (textMonth) {
     const day = +textMonth.m[1];
     const month = MONTHS_RU[textMonth.m[2].toLowerCase()];
-    const hasTime = textMonth.m[4] !== undefined;
-    const hours = hasTime ? +textMonth.m[4] : DEFAULT_HOUR;
-    const minutes = hasTime ? +textMonth.m[5] : DEFAULT_MINUTE;
+    const time = readTimeGroups(textMonth.m[4], textMonth.m[5], textMonth.m[6], textMonth.m[7]);
+    const hours = time ? time.hours : DEFAULT_HOUR;
+    const minutes = time ? time.minutes : DEFAULT_MINUTE;
 
-    if (month !== undefined && day >= 1 && day <= 31 && isValidClock(hours, minutes)) {
+    if (time !== null && month !== undefined && day >= 1 && day <= 31) {
       const year = textMonth.m[3] ? +textMonth.m[3] : userNow.getFullYear();
       let target = atTime(new Date(year, month, day), hours, minutes);
       if (!textMonth.m[3] && target <= userNow) {

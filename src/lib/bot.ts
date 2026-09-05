@@ -225,6 +225,7 @@ async function sendHelp(ctx: Context): Promise<void> {
     `• <code>послезавтра в 14:00</code>\n` +
     `• <code>в пятницу в 18:00</code>\n` +
     `• <code>в 9 утра</code> / <code>в 7 вечера</code>\n` +
+    `• Минуты можно не писать: <code>в понедельник в 10</code>, <code>завтра в 18</code>\n` +
     `• <code>25.12 в 12:00</code> / <code>15 сентября в 10:00</code>\n\n` +
     `<b>3️⃣ Повторяющиеся</b>\n` +
     `• <code>каждый день в 09:00</code>\n` +
