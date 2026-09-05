@@ -194,6 +194,37 @@ expectParse('концерт 25 декабря, начало в 19:30', '2026-12-
 // "г" не должно съедаться, когда это начало обычного слова.
 expectParse('купить 25 декабря гантели в 12:00', '2026-12-25T11:00:00.000Z', 'Купить гантели');
 
+console.log('\n--- 3f. Не заглядывать внутрь идентификаторов ---');
+{
+  // Reported case: the parser read "22-10" out of the middle of a token name
+  // and the confirmation then claimed the message held a second date.
+  const res = parseReminderInput(
+    'Глюкоз_ТЕСТ_22-10-2026_в_8_00 напомни\n18 октября 2026 г. в 16:00',
+    TZ,
+    NOW
+  );
+  check(
+    'берётся настоящая дата в конце',
+    res?.dueDate.toISOString() === '2026-10-18T14:00:00.000Z',
+    `получено ${res?.dueDate.toISOString()}`
+  );
+  check('имя остаётся целым', res?.text === 'Глюкоз_ТЕСТ_22-10-2026_в_8_00', `получено «${res?.text}»`);
+  check(
+    'внутри имени дата не находится — предупреждения не будет',
+    parseReminderInput(res!.text, TZ, NOW) === null,
+    `получено ${JSON.stringify(parseReminderInput(res!.text, TZ, NOW)?.dueDate)}`
+  );
+}
+
+// Дата через дефис неоднозначна — лучше не распознать, чем принять за 22:10.
+check(
+  '«22-10-2026» не читается как время',
+  parseReminderInput('отчёт 22-10-2026', TZ, NOW) === null,
+  `получено ${parseReminderInput('отчёт 22-10-2026', TZ, NOW)?.dueDate.toISOString()}`
+);
+// А обычное время через дефис по-прежнему работает.
+expectParse('в 15-30 позвонить', '2026-09-05T13:30:00.000Z', 'Позвонить');
+
 console.log('\n--- 4. Повторяющиеся ---');
 {
   const daily = parseReminderInput('каждый день в 09:00 зарядка', TZ, NOW);

@@ -97,9 +97,19 @@ const DAY_UNITS_ALT = alt(DAY_UNITS);
 /** A count: either digits or a Russian numeral word. */
 const COUNT = `(\\d{1,4}|${NUM_WORDS})`;
 
-/** Word boundaries that also work for Cyrillic (\b only knows ASCII). */
-const LB = '(?<![0-9a-zа-яё])';
-const RB = '(?![0-9a-zа-яё])';
+/**
+ * Word boundaries that also work for Cyrillic (\b only knows ASCII).
+ *
+ * Underscore counts as part of a word on both sides, so the parser never
+ * reaches inside an identifier: "Глюкоз_ТЕСТ_22-10-2026_в_8_00" is one opaque
+ * token, not a date and a time to be picked apart.
+ *
+ * A hyphen only blocks on the right. That stops "22-10-2026" from being read
+ * as the time 22:10 — an ambiguous date is better left as plain text than
+ * silently misread — while "в 15:00-16:00" can still match its second half.
+ */
+const LB = '(?<![0-9a-zа-яё_])';
+const RB = '(?![0-9a-zа-яё_\\-])';
 
 /** Clock time: "15:30", "15.30", "15-30". */
 const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
@@ -117,7 +127,9 @@ const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
 function timePattern(lead: string): string {
   return (
     `(?:${lead}(?:в\\s+)?(\\d{1,2})[:.\\-](\\d{2})${RB}` +
-    `|${lead}в\\s+(\\d{1,2})(?:\\s*час(?:ов|а)?)?(?:\\s+(${DAY_PARTS}))?${RB})`
+    // The lookahead keeps the minutes-less branch from claiming just the hour
+    // of a full clock time, e.g. reading "в 15:00-16:00" as plain "в 15".
+    `|${lead}в\\s+(\\d{1,2})(?![:.\\-]\\d)(?:\\s*час(?:ов|а)?)?(?:\\s+(${DAY_PARTS}))?${RB})`
   );
 }
 
