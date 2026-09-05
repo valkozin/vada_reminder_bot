@@ -114,12 +114,28 @@ const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
  *
  * Captures four groups: hh, mm, bare hour, part of the day.
  */
-const TIME_REQ =
-  `(?:\\s+(?:в\\s+)?(\\d{1,2})[:.\\-](\\d{2})${RB}` +
-  `|\\s+в\\s+(\\d{1,2})(?:\\s*час(?:ов|а)?)?(?:\\s+(${DAY_PARTS}))?${RB})`;
+function timePattern(lead: string): string {
+  return (
+    `(?:${lead}(?:в\\s+)?(\\d{1,2})[:.\\-](\\d{2})${RB}` +
+    `|${lead}в\\s+(\\d{1,2})(?:\\s*час(?:ов|а)?)?(?:\\s+(${DAY_PARTS}))?${RB})`
+  );
+}
+
+const TIME_REQ = timePattern('\\s+');
 
 /** Same, but the whole time may be missing (the caller then applies a default). */
 const TIME_OPT = `${TIME_REQ}?`;
+
+/** The same time forms, matched on their own rather than after a date. */
+const TIME_DETACHED = timePattern('\\s*');
+
+/**
+ * The Russian year suffix: "2026 г.", "2026 года", "2026 году".
+ * Without this it sits between the year and the time, breaking them apart —
+ * "25 декабря 2026 г. в 18:57" loses the 18:57 and keeps a stray "г." in the
+ * reminder text.
+ */
+const YEAR_SUFFIX = `(?:\\s*г(?:ода|году)?\\.?${RB})?`;
 
 interface ClockTime {
   hours: number;
@@ -214,7 +230,25 @@ function stripFillers(input: string): string {
     changed = text !== before;
   }
 
-  return text.replace(/[\s,.\-–—:;]+$/, '').trim();
+  return text
+    // Cutting a date out of "концерт 25 декабря, начало" leaves the space that
+    // preceded it stranded in front of the comma.
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/[\s,.\-–—:;]+$/, '')
+    .trim();
+}
+
+/**
+ * Finds a time written apart from the date, searched in what is left after the
+ * date has been cut out. Handles anything sitting between the two —
+ * "25 декабря 2026 г. в 18:57", "25 декабря, вечером в 18:57".
+ */
+function extractDetachedTime(rest: string): { time: ClockTime; rest: string } | null {
+  const found = findAndCut(rest, new RegExp(`${LB}${TIME_DETACHED}`, 'i'));
+  if (!found) return null;
+
+  const time = readTimeGroups(found.m[1], found.m[2], found.m[3], found.m[4]);
+  return time ? { time, rest: found.rest } : null;
 }
 
 /** Uppercases the first letter, leaving the rest of the user's casing intact. */
@@ -494,17 +528,21 @@ export function parseReminderInput(
   // --- 9. NUMERIC DATE: "15.09 в 12:00", "25.12.2026 12:00", "15.09" -------
   const numericDate = findAndCut(
     trimmed,
-    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${TIME_OPT}`, 'i')
+    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${YEAR_SUFFIX}${TIME_OPT}`, 'i')
   );
   if (numericDate) {
     const day = +numericDate.m[1];
     const month = +numericDate.m[2] - 1;
-    const time = readTimeGroups(numericDate.m[4], numericDate.m[5], numericDate.m[6], numericDate.m[7]);
-    const hours = time ? time.hours : DEFAULT_HOUR;
-    const minutes = time ? time.minutes : DEFAULT_MINUTE;
+    // `null` means a time was written next to the date but is out of range.
+    const adjacent = readTimeGroups(numericDate.m[4], numericDate.m[5], numericDate.m[6], numericDate.m[7]);
 
-    // `time === null` means a time was written but is out of range.
-    if (time !== null && day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+    if (adjacent !== null && day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+      const detached = adjacent === undefined ? extractDetachedTime(numericDate.rest) : null;
+      const time = adjacent ?? detached?.time;
+      const rest = detached ? detached.rest : numericDate.rest;
+      const hours = time ? time.hours : DEFAULT_HOUR;
+      const minutes = time ? time.minutes : DEFAULT_MINUTE;
+
       let year = numericDate.m[3] ? +numericDate.m[3] : userNow.getFullYear();
       if (year < 100) year += 2000;
       let target = atTime(new Date(year, month, day), hours, minutes);
@@ -512,29 +550,33 @@ export function parseReminderInput(
       if (!numericDate.m[3] && target <= userNow) {
         target = atTime(new Date(year + 1, month, day), hours, minutes);
       }
-      return finish(target, numericDate.rest, 'none', 'numeric_date');
+      return finish(target, rest, 'none', 'numeric_date');
     }
   }
 
   // --- 10. TEXT MONTH: "15 сентября в 10:00", "15 сентября" ----------------
   const textMonth = findAndCut(
     trimmed,
-    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${TIME_OPT}`, 'i')
+    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${YEAR_SUFFIX}${TIME_OPT}`, 'i')
   );
   if (textMonth) {
     const day = +textMonth.m[1];
     const month = MONTHS_RU[textMonth.m[2].toLowerCase()];
-    const time = readTimeGroups(textMonth.m[4], textMonth.m[5], textMonth.m[6], textMonth.m[7]);
-    const hours = time ? time.hours : DEFAULT_HOUR;
-    const minutes = time ? time.minutes : DEFAULT_MINUTE;
+    const adjacent = readTimeGroups(textMonth.m[4], textMonth.m[5], textMonth.m[6], textMonth.m[7]);
 
-    if (time !== null && month !== undefined && day >= 1 && day <= 31) {
+    if (adjacent !== null && month !== undefined && day >= 1 && day <= 31) {
+      const detached = adjacent === undefined ? extractDetachedTime(textMonth.rest) : null;
+      const time = adjacent ?? detached?.time;
+      const rest = detached ? detached.rest : textMonth.rest;
+      const hours = time ? time.hours : DEFAULT_HOUR;
+      const minutes = time ? time.minutes : DEFAULT_MINUTE;
+
       const year = textMonth.m[3] ? +textMonth.m[3] : userNow.getFullYear();
       let target = atTime(new Date(year, month, day), hours, minutes);
       if (!textMonth.m[3] && target <= userNow) {
         target = atTime(new Date(year + 1, month, day), hours, minutes);
       }
-      return finish(target, textMonth.rest, 'none', 'text_month_date');
+      return finish(target, rest, 'none', 'text_month_date');
     }
   }
 
