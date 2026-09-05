@@ -3,15 +3,17 @@
 import { useState } from 'react';
 import { Bell, CheckCircle2, Clock, Cpu, Database, Key, Server, Terminal, Zap } from 'lucide-react';
 import { parseReminderInput, formatFullRussianDate } from '@/lib/parser';
+import { DEFAULT_TIMEZONE, EUROPEAN_TIMEZONES, getUtcOffsetLabel } from '@/lib/timezones';
 
 export default function Dashboard() {
-  const [testInput, setTestInput] = useState('через 2 дня в 15:00 забрать посылку');
-  const [testTz, setTestTz] = useState('Europe/Moscow');
+  const [testInput, setTestInput] = useState('напомни полить цветок через минуту');
+  const [testTz, setTestTz] = useState(DEFAULT_TIMEZONE);
   const [parseResult, setParseResult] = useState<any>(null);
+  const [hasTested, setHasTested] = useState(false);
 
   const handleTestParse = () => {
-    const res = parseReminderInput(testInput, testTz);
-    setParseResult(res);
+    setParseResult(parseReminderInput(testInput, testTz));
+    setHasTested(true);
   };
 
   return (
@@ -63,11 +65,11 @@ export default function Dashboard() {
                   onChange={(e) => setTestTz(e.target.value)}
                   className="w-full px-4 py-2.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-100 focus:outline-none focus:border-indigo-500 transition"
                 >
-                  <option value="Europe/Moscow">Europe/Moscow (UTC+3)</option>
-                  <option value="Europe/Kyiv">Europe/Kyiv (UTC+2/3)</option>
-                  <option value="Asia/Tashkent">Asia/Tashkent (UTC+5)</option>
-                  <option value="Asia/Almaty">Asia/Almaty (UTC+5)</option>
-                  <option value="UTC">UTC</option>
+                  {EUROPEAN_TIMEZONES.map((tz) => (
+                    <option key={tz.id} value={tz.id}>
+                      {tz.id} ({getUtcOffsetLabel(tz.id)})
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -82,6 +84,12 @@ export default function Dashboard() {
             </div>
 
             {/* Parse Output */}
+            {hasTested && parseResult === null && (
+              <div className="mt-4 p-4 rounded-lg bg-rose-950/40 border border-rose-900 text-sm text-rose-300">
+                🤔 Дата или время не распознаны. Попробуйте <code>через минуту полить цветок</code> или{' '}
+                <code>завтра в 15:00 встреча</code>.
+              </div>
+            )}
             {parseResult !== null && (
               <div className="mt-4 p-4 rounded-lg bg-slate-900/90 border border-slate-800 font-mono text-sm space-y-2">
                 <div className="flex justify-between items-center text-xs text-indigo-400 font-bold border-b border-slate-800 pb-1 mb-2">

@@ -1,61 +1,144 @@
-import { parseReminderInput, formatFullRussianDate } from './parser';
+import { parseReminderInput, formatFullRussianDate, calculateNextRecurrence } from './parser';
 
-function testParser() {
-  const fixedNow = new Date('2026-09-05T10:00:00.000Z'); // Saturday Sep 5, 2026 10:00 UTC
-  const timezone = 'Europe/Moscow'; // Moscow = UTC+3 (13:00 Moscow time)
+// Saturday, 5 September 2026, 10:00 UTC == 12:00 in Zurich (CEST, UTC+2)
+const NOW = new Date('2026-09-05T10:00:00.000Z');
+const TZ = 'Europe/Zurich';
 
-  console.log('--- Testing Deterministic Date Parser ---');
+let failures = 0;
+let checks = 0;
 
-  // Test 1: Relative offset "через 20 минут"
-  const res1 = parseReminderInput('через 20 минут проверить духовку', timezone, fixedNow);
-  console.assert(res1 !== null, 'Test 1 Failed: res1 is null');
-  console.log('1. Relative offset (+20m):', res1?.dueDate.toISOString(), 'Text:', res1?.text);
-
-  // Test 2: "завтра в 15:00 полить цветы"
-  const res2 = parseReminderInput('завтра в 15:00 полить цветы', timezone, fixedNow);
-  console.assert(res2 !== null, 'Test 2 Failed: res2 is null');
-  console.log('2. Tomorrow at 15:00:', res2?.dueDate.toISOString(), 'Text:', res2?.text);
-
-  // Test 3: "сегодня в 18:30 купить хлеб"
-  const res3 = parseReminderInput('сегодня в 18:30 купить хлеб', timezone, fixedNow);
-  console.assert(res3 !== null, 'Test 3 Failed: res3 is null');
-  console.log('3. Today at 18:30:', res3?.dueDate.toISOString(), 'Text:', res3?.text);
-
-  // Test 4: Recurring daily "каждый день в 09:00 Зарядка"
-  const res4 = parseReminderInput('каждый день в 09:00 Зарядка', timezone, fixedNow);
-  console.assert(res4?.recurrence === 'daily', 'Test 4 Failed: recurrence not daily');
-  console.log('4. Recurring daily:', res4?.recurrence, 'DueDate:', res4?.dueDate.toISOString());
-
-  // Test 5: Recurring weekly "каждый понедельник в 10:00 Совещание"
-  const res5 = parseReminderInput('каждый понедельник в 10:00 Совещание', timezone, fixedNow);
-  console.assert(res5?.recurrence === 'weekly', 'Test 5 Failed: recurrence not weekly');
-  console.log('5. Recurring weekly:', res5?.recurrence, 'DueDate:', res5?.dueDate.toISOString());
-
-  // Test 6: Text month "15 сентября в 12:00 Встреча"
-  const res6 = parseReminderInput('15 сентября в 12:00 Встреча', timezone, fixedNow);
-  console.assert(res6 !== null, 'Test 6 Failed: res6 is null');
-  console.log('6. Text month:', res6?.dueDate.toISOString(), 'Text:', res6?.text);
-
-  // Test 7: "через 2 дня в 15:00 забрать посылку"
-  const res7 = parseReminderInput('через 2 дня в 15:00 забрать посылку', timezone, fixedNow);
-  console.assert(res7 !== null, 'Test 7 Failed: res7 is null');
-  console.log('7. Relative days with time:', res7?.dueDate.toISOString(), 'Text:', res7?.text);
-
-  // Test 8: Reschedule input without text: "через 2 часа"
-  const res8 = parseReminderInput('через 2 часа', timezone, fixedNow);
-  console.assert(res8 !== null, 'Test 8 Failed: res8 is null');
-  console.assert(res8?.text === '', 'Test 8 text should be empty');
-  console.log('8. Time only without text:', res8?.dueDate.toISOString(), 'Text is empty:', res8?.text === '');
-
-  // Test 9: formatFullRussianDate
-  if (res7) {
-    const formatted = formatFullRussianDate(res7.dueDate, timezone);
-    console.log('9. Formatted with weekday:', formatted);
-    console.assert(formatted.toLowerCase().includes('понедельник'), 'Should include weekday понедельник');
+function check(name: string, condition: boolean, detail = ''): void {
+  checks++;
+  if (condition) {
+    console.log(`  ✅ ${name}`);
+  } else {
+    failures++;
+    console.error(`  ❌ ${name}${detail ? ` — ${detail}` : ''}`);
   }
-
-  console.log('✅ ALL PARSER TESTS PASSED!');
 }
 
-testParser();
+/** Asserts both the resulting instant and the extracted reminder text. */
+function expectParse(input: string, expectedIso: string | null, expectedText?: string): void {
+  const res = parseReminderInput(input, TZ, NOW);
 
+  if (expectedIso === null) {
+    check(`"${input}" → не распознаётся`, res === null, `получено ${res?.dueDate.toISOString()}`);
+    return;
+  }
+
+  if (!res) {
+    check(`"${input}"`, false, 'вернулся null');
+    return;
+  }
+
+  const actualIso = res.dueDate.toISOString();
+  check(`"${input}" → ${expectedIso}`, actualIso === expectedIso, `получено ${actualIso}`);
+
+  if (expectedText !== undefined) {
+    check(`"${input}" → текст «${expectedText}»`, res.text === expectedText, `получено «${res.text}»`);
+  }
+}
+
+console.log('\n--- 1. Время в любом месте фразы ---');
+expectParse('напомни полить цветок через минуту', '2026-09-05T10:01:00.000Z', 'Полить цветок');
+expectParse('через минуту напомни полить цветок', '2026-09-05T10:01:00.000Z', 'Полить цветок');
+expectParse('полить цветок через 1 минуту', '2026-09-05T10:01:00.000Z', 'Полить цветок');
+expectParse('напомни съесть через 1 минуту', '2026-09-05T10:01:00.000Z', 'Съесть');
+expectParse('напомни мне что нужно съесть через минуту', '2026-09-05T10:01:00.000Z', 'Съесть');
+expectParse('позвонить маме завтра в 15:00', '2026-09-06T13:00:00.000Z', 'Позвонить маме');
+
+console.log('\n--- 2. Относительное время ---');
+expectParse('через 20 минут проверить духовку', '2026-09-05T10:20:00.000Z', 'Проверить духовку');
+expectParse('через пять минут', '2026-09-05T10:05:00.000Z', '');
+expectParse('через полчаса выпить кофе', '2026-09-05T10:30:00.000Z', 'Выпить кофе');
+expectParse('через 2 часа', '2026-09-05T12:00:00.000Z', '');
+expectParse('через 1 час 30 минут выключить плиту', '2026-09-05T11:30:00.000Z', 'Выключить плиту');
+expectParse('через час позвонить', '2026-09-05T11:00:00.000Z', 'Позвонить');
+expectParse('через неделю продлить подписку', '2026-09-12T10:00:00.000Z', 'Продлить подписку');
+expectParse('через 2 дня в 15:00 забрать посылку', '2026-09-07T13:00:00.000Z', 'Забрать посылку');
+
+console.log('\n--- 3. Конкретные дата и время ---');
+expectParse('завтра в 15:00 полить цветы', '2026-09-06T13:00:00.000Z', 'Полить цветы');
+expectParse('сегодня в 18:30 купить хлеб', '2026-09-05T16:30:00.000Z', 'Купить хлеб');
+expectParse('послезавтра в 14:00 встреча', '2026-09-07T12:00:00.000Z', 'Встреча');
+expectParse('купить хлеб сегодня вечером', '2026-09-05T17:00:00.000Z', 'Купить хлеб');
+expectParse('завтра утром позвонить врачу', '2026-09-06T07:00:00.000Z', 'Позвонить врачу');
+expectParse('в 7 вечера ужин', '2026-09-05T17:00:00.000Z', 'Ужин');
+expectParse('в 9 утра выпить таблетки', '2026-09-06T07:00:00.000Z', 'Выпить таблетки');
+expectParse('15 сентября в 12:00 встреча', '2026-09-15T10:00:00.000Z', 'Встреча');
+expectParse('25.12 в 12:00 подарки', '2026-12-25T11:00:00.000Z', 'Подарки');
+expectParse('в пятницу в 18:00 отчёт', '2026-09-11T16:00:00.000Z', 'Отчёт');
+
+console.log('\n--- 4. Повторяющиеся ---');
+{
+  const daily = parseReminderInput('каждый день в 09:00 зарядка', TZ, NOW);
+  check('каждый день → recurrence=daily', daily?.recurrence === 'daily', `получено ${daily?.recurrence}`);
+  check('каждый день → текст «Зарядка»', daily?.text === 'Зарядка', `получено «${daily?.text}»`);
+  check(
+    'каждый день → 2026-09-06T07:00:00.000Z',
+    daily?.dueDate.toISOString() === '2026-09-06T07:00:00.000Z',
+    `получено ${daily?.dueDate.toISOString()}`
+  );
+
+  const weekly = parseReminderInput('каждый понедельник в 10:00 совещание', TZ, NOW);
+  check('каждый понедельник → weekly', weekly?.recurrence === 'weekly', `получено ${weekly?.recurrence}`);
+  check('каждый понедельник → dayOfWeek=1', weekly?.recurrenceRule?.dayOfWeek === 1);
+
+  const weekdays = parseReminderInput('по будням в 09:00 зарядка', TZ, NOW);
+  check('по будням → weekdays', weekdays?.recurrence === 'weekdays', `получено ${weekdays?.recurrence}`);
+  check(
+    'по будням → пропускает выходные (понедельник)',
+    weekdays?.dueDate.toISOString() === '2026-09-07T07:00:00.000Z',
+    `получено ${weekdays?.dueDate.toISOString()}`
+  );
+
+  const monthly = parseReminderInput('каждое 15 число в 12:00 оплатить счёт', TZ, NOW);
+  check('каждое 15 число → monthly', monthly?.recurrence === 'monthly', `получено ${monthly?.recurrence}`);
+  check('каждое 15 число → dayOfMonth=15', monthly?.recurrenceRule?.dayOfMonth === 15);
+}
+
+console.log('\n--- 5. Мусор и некорректный ввод ---');
+expectParse('просто какой-то текст без времени', null);
+expectParse('', null);
+expectParse('позвонить в 25:99', null);
+
+console.log('\n--- 6. Повторы через переход на зимнее время ---');
+{
+  // 24 Oct 2026 09:00 CEST; Europe switches to CET overnight on 25 Oct.
+  const next = calculateNextRecurrence(
+    new Date('2026-10-24T07:00:00.000Z'),
+    'daily',
+    TZ,
+    new Date('2026-10-24T07:00:30.000Z')
+  );
+  check(
+    'ежедневное напоминание держит 09:00 по местному времени после перевода часов',
+    next.toISOString() === '2026-10-25T08:00:00.000Z',
+    `получено ${next.toISOString()}`
+  );
+
+  // Cron was down for a week — the reminder must jump to the next FUTURE slot,
+  // not fire six more times catching up.
+  const caughtUp = calculateNextRecurrence(
+    new Date('2026-09-01T07:00:00.000Z'),
+    'daily',
+    TZ,
+    new Date('2026-09-08T09:00:00.000Z')
+  );
+  check(
+    'пропущенные повторы не накапливаются',
+    caughtUp > new Date('2026-09-08T09:00:00.000Z'),
+    `получено ${caughtUp.toISOString()}`
+  );
+}
+
+console.log('\n--- 7. Форматирование ---');
+{
+  const formatted = formatFullRussianDate(new Date('2026-09-07T13:00:00.000Z'), TZ);
+  check('формат содержит день недели', /понедельник/i.test(formatted), formatted);
+  check('формат содержит время 15:00', formatted.includes('15:00'), formatted);
+  console.log(`     → ${formatted}`);
+}
+
+console.log(`\n${failures === 0 ? '✅' : '❌'} Проверок: ${checks}, провалено: ${failures}\n`);
+if (failures > 0) process.exit(1);
