@@ -68,8 +68,13 @@ const miniAppUrl = getAppUrl() ? `${getAppUrl()}/app` : null;
 // still shown by default, they can just be collapsed like any other bot's.
 function buildMainKeyboard(): Keyboard {
   const keyboard = new Keyboard().text(BTN_LIST);
-  // The Mini App button only exists when we know our own public address.
-  if (miniAppUrl) keyboard.webApp(BTN_APP, miniAppUrl);
+  // Deliberately a plain text button rather than .webApp(): Telegram treats a
+  // Mini App launched from a *keyboard* button as the "simple" kind and hands
+  // it an empty initData — such an app is expected to reply through sendData()
+  // instead. Our page authenticates by that signature, so it must be opened
+  // from an inline button or the ☰ menu button, both of which do provide it.
+  // Tapping this sends a message carrying the inline button.
+  if (miniAppUrl) keyboard.text(BTN_APP);
   return keyboard.row().text(BTN_TIMEZONE).text(BTN_HELP).resized();
 }
 
@@ -713,10 +718,11 @@ bot.on('message:text', async (ctx) => {
 
   // Persistent keyboard buttons arrive as ordinary text messages. Tapping one
   // means the user moved on, so any half-finished prompt is dropped.
-  if (text === BTN_LIST || text === BTN_HELP || text === BTN_TIMEZONE) {
+  if (text === BTN_LIST || text === BTN_HELP || text === BTN_TIMEZONE || text === BTN_APP) {
     await clearPendingAction(userId);
     if (text === BTN_LIST) return sendList(ctx);
     if (text === BTN_HELP) return sendHelp(ctx);
+    if (text === BTN_APP) return sendMiniAppLink(ctx);
     return sendTimezoneMenu(ctx);
   }
 

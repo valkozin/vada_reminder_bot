@@ -28,6 +28,7 @@ interface TelegramWebApp {
   ready: () => void;
   expand: () => void;
   colorScheme?: string;
+  platform?: string;
   HapticFeedback?: { notificationOccurred: (t: 'error' | 'success' | 'warning') => void };
   showConfirm?: (message: string, callback: (confirmed: boolean) => void) => void;
 }
@@ -58,6 +59,7 @@ function toLocalInputValue(iso: string, timezone: string): string {
 export default function MiniApp() {
   const [initData, setInitData] = useState<string | null>(null);
   const [outsideTelegram, setOutsideTelegram] = useState(false);
+  const [diagnosis, setDiagnosis] = useState<string | null>(null);
   const [reminders, setReminders] = useState<ReminderView[]>([]);
   const [timezone, setTimezone] = useState('UTC');
   const [loading, setLoading] = useState(true);
@@ -78,6 +80,13 @@ export default function MiniApp() {
     script.onload = () => {
       const webApp = getWebApp();
       if (!webApp || !webApp.initData) {
+        // Distinguish "not in Telegram at all" from "in Telegram, but launched
+        // in a way that carries no signature" — the two need different advice.
+        setDiagnosis(
+          webApp
+            ? `Telegram есть (${webApp.platform ?? 'платформа неизвестна'}), но подпись не передана.`
+            : 'Похоже, это обычный браузер.'
+        );
         setOutsideTelegram(true);
         setLoading(false);
         return;
@@ -87,6 +96,7 @@ export default function MiniApp() {
       setInitData(webApp.initData);
     };
     script.onerror = () => {
+      setDiagnosis('Не удалось загрузить скрипт Telegram.');
       setOutsideTelegram(true);
       setLoading(false);
     };
@@ -186,13 +196,18 @@ export default function MiniApp() {
   if (outsideTelegram) {
     return (
       <main className="min-h-screen flex items-center justify-center p-6 text-center">
-        <div>
+        <div className="max-w-xs">
           <Bell className="mx-auto mb-4 text-indigo-400" size={40} />
           <h1 className="text-lg font-bold mb-2">Откройте из бота</h1>
-          <p className="text-sm text-slate-400 max-w-xs">
-            Эта страница работает только внутри Telegram: она берёт вашу подпись оттуда.
-            Отправьте боту команду <code className="text-indigo-300">/app</code>.
+          <p className="text-sm text-slate-400 mb-4">
+            Страница узнаёт вас по подписи Telegram, а её передают не все способы запуска.
           </p>
+          <p className="text-sm text-slate-300 mb-1">Откройте одним из двух способов:</p>
+          <ul className="text-sm text-slate-400 text-left inline-block mb-4">
+            <li>☰ кнопка рядом с полем ввода</li>
+            <li>команда <code className="text-indigo-300">/app</code> → кнопка под сообщением</li>
+          </ul>
+          {diagnosis && <p className="text-xs text-slate-600">{diagnosis}</p>}
         </div>
       </main>
     );
