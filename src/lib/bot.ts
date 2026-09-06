@@ -22,6 +22,7 @@ import {
   getLocalTimeLabel,
 } from './timezones';
 import { addMinutes } from 'date-fns';
+import { getAppUrl } from './webapp-auth';
 
 const token = process.env.TELEGRAM_BOT_TOKEN || 'dummy_token_for_build';
 export const bot = new Bot(token);
@@ -54,14 +55,25 @@ const RECURRENCE_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 const BTN_LIST = '📋 Мои напоминания';
+const BTN_APP = '🗂 Все задачи';
 const BTN_TIMEZONE = '🌍 Часовой пояс';
 const BTN_HELP = '❓ Помощь';
+
+/** Absolute HTTPS address of the Mini App, or null when it is not configured. */
+const miniAppUrl = getAppUrl() ? `${getAppUrl()}/app` : null;
 
 // Deliberately NOT .persistent(): that flag removes the client's toggle for
 // hiding the custom keyboard, and on Android the back button then spends its
 // press on the keyboard instead of leaving the chat. Without it the buttons are
 // still shown by default, they can just be collapsed like any other bot's.
-const mainKeyboard = new Keyboard().text(BTN_LIST).row().text(BTN_TIMEZONE).text(BTN_HELP).resized();
+function buildMainKeyboard(): Keyboard {
+  const keyboard = new Keyboard().text(BTN_LIST);
+  // The Mini App button only exists when we know our own public address.
+  if (miniAppUrl) keyboard.webApp(BTN_APP, miniAppUrl);
+  return keyboard.row().text(BTN_TIMEZONE).text(BTN_HELP).resized();
+}
+
+const mainKeyboard = buildMainKeyboard();
 
 /** Buttons attached to a single reminder (creation, snooze, delivery). */
 function reminderKeyboard(reminderId: string, includeSnooze = true): InlineKeyboard {
@@ -85,6 +97,7 @@ function reminderKeyboard(reminderId: string, includeSnooze = true): InlineKeybo
 
 const BOT_COMMANDS = [
   { command: 'list', description: '📋 Мои напоминания' },
+  { command: 'app', description: '🗂 Открыть список страницей' },
   { command: 'tz', description: '🌍 Часовой пояс' },
   { command: 'help', description: '❓ Справка и примеры' },
   { command: 'cancel', description: '❌ Отменить текущее действие' },
@@ -369,6 +382,29 @@ async function renderItem(ctx: Context, reminderId: string, page: number): Promi
   return true;
 }
 
+/**
+ * Opens the Mini App: the whole list on one page, with editing and deleting.
+ * Telegram signs the launch, so the page needs no login of its own.
+ */
+async function sendMiniAppLink(ctx: Context): Promise<void> {
+  if (!miniAppUrl) {
+    await ctx.reply(
+      '⚠️ Адрес страницы не настроен.\n\n' +
+        'Задайте переменную <code>APP_PUBLIC_URL</code> на Vercel ' +
+        '(например, <code>https://ваш-проект.vercel.app</code>) и сделайте Redeploy.\n\n' +
+        'Пока пользуйтесь списком в чате: /list',
+      HTML
+    );
+    return;
+  }
+
+  await ctx.reply(
+    '🗂 <b>Все задачи на одной странице</b>\n\n' +
+      'Там же можно изменить текст и время или удалить. Изменения сразу видны в чате.',
+    { ...HTML, reply_markup: new InlineKeyboard().webApp('🗂 Открыть список', miniAppUrl) }
+  );
+}
+
 async function sendTimezoneMenu(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;
   if (!userId) return;
@@ -403,6 +439,7 @@ bot.command('start', async (ctx) => {
 
 bot.command('help', sendHelp);
 bot.command('list', sendList);
+bot.command('app', sendMiniAppLink);
 
 bot.command('cancel', async (ctx) => {
   const userId = ctx.from?.id;

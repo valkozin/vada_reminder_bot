@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { bot, ensureBotCommands, BOT_COMMANDS } from '@/lib/bot';
 import { isUsingMemoryFallback } from '@/lib/db';
 import { getEncryptionStatus, exportMasterKey } from '@/lib/crypto';
+import { getAppUrl } from '@/lib/webapp-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -85,8 +86,28 @@ export async function GET(req: NextRequest) {
     await ensureBotCommands(true);
     result.commands = BOT_COMMANDS.map((c) => `/${c.command}`);
 
-    await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } });
-    result.menuButton = 'commands';
+    // When the public address is known, the ☰ button next to the input opens
+    // the Mini App. Commands stay reachable by typing "/".
+    const appUrl = getAppUrl() ?? req.nextUrl.origin;
+    const miniAppUrl = `${appUrl}/app`;
+
+    if (miniAppUrl.startsWith('https://')) {
+      await bot.api.setChatMenuButton({
+        menu_button: { type: 'web_app', text: '🗂 Задачи', web_app: { url: miniAppUrl } },
+      });
+      result.menuButton = miniAppUrl;
+    } else {
+      // Telegram only accepts HTTPS for Mini Apps, so local dev keeps commands.
+      await bot.api.setChatMenuButton({ menu_button: { type: 'commands' } });
+      result.menuButton = 'commands';
+    }
+
+    if (!process.env.APP_PUBLIC_URL) {
+      warnings.push(
+        'APP_PUBLIC_URL не задан — адрес мини-приложения выведен автоматически ' +
+          `("${miniAppUrl}"). Если у проекта свой домен, задайте переменную явно.`
+      );
+    }
 
     if (req.nextUrl.searchParams.get('setWebhook') === '1') {
       const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET;

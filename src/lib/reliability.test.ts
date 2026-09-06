@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto';
 // Default configuration under test: no ENCRYPTION_KEY at all, only a bot token.
 // This is what a user gets with zero key management.
 delete process.env.ENCRYPTION_KEY;
-process.env.TELEGRAM_BOT_TOKEN = '7123456789:AAFtest-token-used-only-by-the-test-suite';
+const TEST_BOT_TOKEN = '7123456789:AAFtest-token-used-only-by-the-test-suite';
+process.env.TELEGRAM_BOT_TOKEN = TEST_BOT_TOKEN;
 delete process.env.UPSTASH_REDIS_REST_URL;
 delete process.env.UPSTASH_REDIS_REST_TOKEN;
 
@@ -249,6 +250,164 @@ console.log('\n--- 9. Смена источника ключа ---');
   delete process.env.ENCRYPTION_KEY;
   process.env.TELEGRAM_BOT_TOKEN = '7123456789:AAF-a-completely-different-bot-token';
   check('при полной потере ключей расшифровка честно падает', decryptForUser(ALICE, oldBlob, 'rem_rotate') === null);
+}
+
+const { createHmac } = await import('node:crypto');
+
+/** Signs initData exactly the way Telegram does. */
+function sign(fields: Record<string, string>, withToken = process.env.TELEGRAM_BOT_TOKEN!): string {
+  const checkString = Object.entries(fields)
+    .map(([k, v]) => `${k}=${v}`)
+    .sort()
+    .join('\n');
+  const secret = createHmac('sha256', 'WebAppData').update(withToken).digest();
+  const hash = createHmac('sha256', secret).update(checkString).digest('hex');
+  return new URLSearchParams({ ...fields, hash }).toString();
+}
+
+/** A freshly signed launch for one user, as Telegram would produce it. */
+function launchFor(userId: number): string {
+  return sign({
+    auth_date: String(Math.floor(Date.now() / 1000)),
+    user: JSON.stringify({ id: userId, first_name: `U${userId}` }),
+  });
+}
+
+console.log('\n--- 9. Авторизация мини-приложения ---');
+{
+  const { verifyInitData, isUserAllowed } = await import('./webapp-auth');
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const aliceFields = {
+    auth_date: String(nowSeconds),
+    query_id: 'AAH123',
+    user: JSON.stringify({ id: ALICE, first_name: 'Алиса' }),
+  };
+
+  const valid = sign(aliceFields);
+  check('корректная подпись принимается', verifyInitData(valid)?.id === ALICE);
+
+  // Someone who does not hold the bot token cannot forge a launch.
+  const forged = sign(aliceFields, '7123456789:AAF-attacker-does-not-have-the-real-token');
+  check('подпись чужим токеном отвергается', verifyInitData(forged) === null);
+
+  // Swapping the user id after signing must invalidate the whole payload.
+  const swapped = new URLSearchParams(valid);
+  swapped.set('user', JSON.stringify({ id: BOB, first_name: 'Боб' }));
+  check('подмена user id отвергается', verifyInitData(swapped.toString()) === null);
+
+  const noHash = new URLSearchParams(valid);
+  noHash.delete('hash');
+  check('без подписи отвергается', verifyInitData(noHash.toString()) === null);
+  check('пустая строка отвергается', verifyInitData('') === null);
+
+  // An old launch must not stay usable forever.
+  const stale = sign({ ...aliceFields, auth_date: String(nowSeconds - 60 * 60 * 48) });
+  check('устаревший запуск отвергается', verifyInitData(stale) === null);
+
+  // A future auth_date is a forgery attempt, not clock skew.
+  const future = sign({ ...aliceFields, auth_date: String(nowSeconds + 3600) });
+  check('дата запуска из будущего отвергается', verifyInitData(future) === null);
+
+  // Small skew is tolerated, otherwise honest users get locked out.
+  const skewed = sign({ ...aliceFields, auth_date: String(nowSeconds - 30) });
+  check('небольшой сдвиг часов допускается', verifyInitData(skewed)?.id === ALICE);
+
+  // The Mini App must not become a way around the allow-list.
+  process.env.TELEGRAM_ALLOWED_USER_IDS = String(ALICE);
+  check('разрешённый пользователь проходит', isUserAllowed(ALICE));
+  check('посторонний не проходит', !isUserAllowed(BOB));
+  delete process.env.TELEGRAM_ALLOWED_USER_IDS;
+  check('без списка пускает всех', isUserAllowed(BOB));
+}
+
+console.log('\n--- 10. API мини-приложения: чтение, правка, удаление ---');
+{
+  // Section 8 left a rotated token behind; restore it so the records written
+  // by earlier sections are readable again.
+  process.env.TELEGRAM_BOT_TOKEN = TEST_BOT_TOKEN;
+
+  const { NextRequest } = await import('next/server');
+  const route = await import('../app/api/reminders/route');
+
+  interface ApiReminder {
+    id: string;
+    text: string;
+    dueLabel: string;
+    dueDate: string;
+  }
+
+  /** Earlier sections leave data in the store, so assert on this id, not counts. */
+  const findOwn = (payload: { reminders: ApiReminder[] }): ApiReminder | undefined =>
+    payload.reminders.find((r) => r.id === 'rem_app_1');
+
+  function request(method: string, initData: string, opts: { body?: unknown; query?: string } = {}) {
+    return new NextRequest(`http://localhost/api/reminders${opts.query ?? ''}`, {
+      method,
+      headers: { 'content-type': 'application/json', 'x-telegram-init-data': initData },
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    });
+  }
+
+  const alice = launchFor(ALICE);
+  const bob = launchFor(BOB);
+
+  await db.saveReminder({
+    id: 'rem_app_1',
+    userId: ALICE,
+    chatId: ALICE,
+    text: 'Позвонить врачу',
+    dueDate: new Date('2026-12-24T09:00:00.000Z').toISOString(),
+    timezone: 'Europe/Zurich',
+    recurrence: 'none',
+    status: 'active',
+    createdAt: new Date().toISOString(),
+  });
+
+  const mine = findOwn(await (await route.GET(request('GET', alice))).json());
+  check('владелец видит своё напоминание', mine !== undefined);
+  check('текст расшифрован для владельца', mine?.text === 'Позвонить врачу', mine?.text);
+  check('дата отдаётся человекочитаемо', /декабря/.test(mine?.dueLabel ?? ''), mine?.dueLabel);
+
+  check(
+    'чужой не видит его в своём списке',
+    findOwn(await (await route.GET(request('GET', bob))).json()) === undefined
+  );
+
+  // Knowing the id is not enough: ownership is re-checked in storage.
+  const bobEdit = await route.PATCH(request('PATCH', bob, { body: { id: 'rem_app_1', text: 'Взлом' } }));
+  check('чужой не может отредактировать', bobEdit.status === 404);
+
+  const bobDelete = await route.DELETE(request('DELETE', bob, { query: '?id=rem_app_1' }));
+  check('чужой не может удалить', bobDelete.status === 404);
+  check('напоминание на месте', (await db.getReminder('rem_app_1'))?.text === 'Позвонить врачу');
+
+  const edit = await route.PATCH(
+    request('PATCH', alice, { body: { id: 'rem_app_1', text: 'Позвонить стоматологу', dueLocal: '2026-12-24T18:30' } })
+  );
+  const edited = await edit.json();
+  check('владелец меняет текст', edited.reminder?.text === 'Позвонить стоматологу');
+  check('владелец меняет время', edited.reminder?.dueLabel.includes('18:30'), edited.reminder?.dueLabel);
+  check(
+    'время истолковано в зоне пользователя (17:30 UTC)',
+    edited.reminder?.dueDate === '2026-12-24T17:30:00.000Z',
+    edited.reminder?.dueDate
+  );
+
+  const stored = await db.getReminder('rem_app_1');
+  check('правка сохранилась в базе', stored?.text === 'Позвонить стоматологу');
+
+  const empty = await route.PATCH(request('PATCH', alice, { body: { id: 'rem_app_1', text: '   ' } }));
+  check('пустой текст отклоняется', empty.status === 400);
+
+  const badDate = await route.PATCH(
+    request('PATCH', alice, { body: { id: 'rem_app_1', dueLocal: 'завтра' } })
+  );
+  check('некорректная дата отклоняется', badDate.status === 400);
+
+  const gone = await route.DELETE(request('DELETE', alice, { query: '?id=rem_app_1' }));
+  check('владелец удаляет', gone.status === 200);
+  check('и оно исчезает из списка', findOwn(await (await route.GET(request('GET', alice))).json()) === undefined);
 }
 
 console.log(`\n${failures === 0 ? '✅' : '❌'} Проверок: ${checks}, провалено: ${failures}\n`);
