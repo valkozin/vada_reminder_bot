@@ -1,4 +1,9 @@
-import { parseReminderInput, formatFullRussianDate, calculateNextRecurrence } from './parser';
+import {
+  parseReminderInput,
+  formatFullRussianDate,
+  calculateNextRecurrence,
+  deleteQuestion,
+} from './parser';
 
 // Saturday, 5 September 2026, 10:00 UTC == 12:00 in Zurich (CEST, UTC+2)
 const NOW = new Date('2026-09-05T10:00:00.000Z');
@@ -327,6 +332,18 @@ console.log('\n--- 7. Форматирование ---');
   check('формат содержит день недели', /понедельник/i.test(formatted), formatted);
   check('формат содержит время 15:00', formatted.includes('15:00'), formatted);
   console.log(`     → ${formatted}`);
+}
+
+console.log('\n--- 8. Вопрос при удалении ---');
+{
+  // Telegram's showConfirm throws above 256 characters and the dialog never opens,
+  // which is what made Delete do nothing on long reminders.
+  const long = 'Фывф ывф вфы вфыв фыв '.repeat(30);
+  const question = deleteQuestion(long);
+  check('длинный текст укладывается в лимит Telegram', question.length <= 256, `${question.length} символов`);
+  check('длинный текст обрезан многоточием', question.includes('…'), question);
+  const short = 'Полить цветы';
+  check('короткий текст не трогаем', deleteQuestion(short) === `Удалить «${short}»?`, deleteQuestion(short));
 }
 
 console.log(`\n${failures === 0 ? '✅' : '❌'} Проверок: ${checks}, провалено: ${failures}\n`);

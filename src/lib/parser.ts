@@ -738,3 +738,15 @@ export function formatTimeUntil(target: Date, from: Date = new Date()): string {
   if (hours > 0) return `через ${hours} ч ${minutes} мин`;
   return `через ${minutes} мин`;
 }
+
+/**
+ * Question for the delete confirmation in the Mini App.
+ *
+ * Telegram caps a showConfirm message at 256 characters: a longer one throws
+ * WebAppPopupParamInvalid, the dialog never opens, and the Delete button looks dead.
+ * Long reminders hit that; short ones did not.
+ */
+export function deleteQuestion(text: string): string {
+  const preview = text.length > 100 ? `${text.slice(0, 100).trimEnd()}…` : text;
+  return `Удалить «${preview}»?`;
+}

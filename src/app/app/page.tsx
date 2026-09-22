@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Bell, Check, Pencil, RefreshCw, Trash2, X } from 'lucide-react';
 
+import { deleteQuestion } from '@/lib/parser';
+
 interface ReminderView {
   id: string;
   text: string;
@@ -185,12 +187,17 @@ export default function MiniApp() {
     };
 
     const webApp = getWebApp();
-    const question = `Удалить «${reminder.text}»?`;
-    if (webApp?.showConfirm) {
-      webApp.showConfirm(question, confirmDelete);
-    } else {
-      confirmDelete(window.confirm(question));
+    const question = deleteQuestion(reminder.text);
+    try {
+      if (webApp?.showConfirm) {
+        webApp.showConfirm(question, confirmDelete);
+        return;
+      }
+    } catch {
+      // Telegram also refuses a popup while another one is open. Never leave the
+      // button doing nothing at all.
     }
+    confirmDelete(window.confirm(question));
   }
 
   if (outsideTelegram) {
