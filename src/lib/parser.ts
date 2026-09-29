@@ -128,10 +128,15 @@ const CLOCK = '(\\d{1,2})[:.\\-](\\d{2})';
  * "завтра 5 яблок купить" into 05:00.
  *
  * Captures four groups: hh, mm, bare hour, part of the day.
+ *
+ * `afterDate` is for a time right after a calendar date. There a bare dotted
+ * "03.11" that could itself be a date is taken as a second date, not as 03:11:
+ * "дедлайн 30.11 напомни 03.11" means two dates. "в 03.11" and "03:11" stay times.
  */
-function timePattern(lead: string): string {
+function timePattern(lead: string, afterDate = false): string {
+  const dateLike = afterDate ? `(?!\\d{1,2}\\.(?:0[1-9]|1[0-2])${RB})` : '';
   return (
-    `(?:${lead}(?:в\\s+)?(\\d{1,2})[:.\\-](\\d{2})${RB}` +
+    `(?:${lead}(?:в\\s+|${dateLike})(\\d{1,2})[:.\\-](\\d{2})${RB}` +
     // The lookahead keeps the minutes-less branch from claiming just the hour
     // of a full clock time, e.g. reading "в 15:00-16:00" as plain "в 15".
     `|${lead}в\\s+(\\d{1,2})(?![:.\\-]\\d)(?:\\s*час(?:ов|а)?)?(?:\\s+(${DAY_PARTS}))?${RB})`
@@ -141,7 +146,7 @@ function timePattern(lead: string): string {
 const TIME_REQ = timePattern('\\s+');
 
 /** Same, but the whole time may be missing (the caller then applies a default). */
-const TIME_OPT = `${TIME_REQ}?`;
+const TIME_OPT = `${timePattern('\\s+', true)}?`;
 
 /** The same time forms, matched on their own rather than after a date. */
 const TIME_DETACHED = timePattern('\\s*');
