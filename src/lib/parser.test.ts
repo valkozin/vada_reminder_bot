@@ -141,15 +141,15 @@ console.log('\n--- 3c. Задержанное сообщение отсчиты�
 
 console.log('\n--- 3d. «напомни» в середине фразы и две даты ---');
 {
-  // Reported case: the first date wins, the rest stays as text, but the command
-  // word must not be left stranded in the middle of it.
+  // The date right after "напомни" wins, the other stays as text, and the
+  // command word must not be left stranded in the middle of it.
   const two = parseReminderInput('тест 6 сентября тест2 напомни 7 сентября', TZ, NOW);
   check(
-    'берётся первая дата (6 сентября)',
-    two?.dueDate.toISOString() === '2026-09-06T07:00:00.000Z',
+    'берётся дата после «напомни» (7 сентября)',
+    two?.dueDate.toISOString() === '2026-09-07T07:00:00.000Z',
     `получено ${two?.dueDate.toISOString()}`
   );
-  check('«напомни» убрано из середины текста', two?.text === 'Тест тест2 7 сентября', `получено «${two?.text}»`);
+  check('«напомни» убрано из середины текста', two?.text === 'Тест 6 сентября тест2', `получено «${two?.text}»`);
   check(
     'остаток текста распознаётся как дата — бот предупредит',
     parseReminderInput(two!.text, TZ, NOW) !== null
@@ -290,6 +290,30 @@ console.log('\n--- 4. Повторяющиеся ---');
   check('каждое 15 число → monthly', monthly?.recurrence === 'monthly', `получено ${monthly?.recurrence}`);
   check('каждое 15 число → dayOfMonth=15', monthly?.recurrenceRule?.dayOfMonth === 15);
 }
+
+console.log('\n--- 4б. Две даты в одном сообщении ---');
+// The date written with a time is when to remind; the other stays in the text.
+expectParse(
+  'Позиция Уни Базель дедлайн 30 ноября податься напомни 3 ноября в 9:00',
+  '2026-11-03T08:00:00.000Z',
+  'Позиция Уни Базель дедлайн 30 ноября податься'
+);
+expectParse('дедлайн 30.11 напомни 3 ноября в 9:00', '2026-11-03T08:00:00.000Z', 'Дедлайн 30.11');
+expectParse('напомни 3 ноября про дедлайн 30 ноября', '2026-11-03T08:00:00.000Z', 'Дедлайн 30 ноября');
+// No time anywhere: the date right after "напомни" is the one.
+expectParse('дедлайн 30 ноября, напомни 3 ноября', '2026-11-03T08:00:00.000Z', 'Дедлайн 30 ноября');
+expectParse('дедлайн 30 ноября напомни мне 3 ноября', '2026-11-03T08:00:00.000Z', 'Дедлайн 30 ноября');
+// The loose time belongs to the other date, so the reminder keeps the default 9:00.
+expectParse(
+  'напомни 3 ноября про собеседование 30 ноября в 14:00',
+  '2026-11-03T08:00:00.000Z',
+  'Собеседование 30 ноября в 14:00'
+);
+expectParse(
+  'собеседование 30 ноября в 14:00, напомни 3 ноября в 18:00',
+  '2026-11-03T17:00:00.000Z',
+  'Собеседование 30 ноября в 14:00'
+);
 
 console.log('\n--- 5. Мусор и некорректный ввод ---');
 expectParse('просто какой-то текст без времени', null);

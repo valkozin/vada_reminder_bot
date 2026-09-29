@@ -225,7 +225,7 @@ function stripFillers(input: string): string {
   // Only the imperative forms — the noun "напоминание" can be real content
   // ("отправить напоминание коллегам"), so it is stripped from the front only.
   const IMPERATIVE_ANYWHERE = new RegExp(
-    `(?<![0-9a-zа-яё-])(?:напомни(?:ть|шь|те)?|напоминай)(?:-ка)?${FILLER_RB}`,
+    `(?<![0-9a-zа-яё-])(?:напомни(?:ть|шь|те)?|напоминай)(?:-ка)?(?:\\s+мне)?${FILLER_RB}`,
     'gi'
   );
 
@@ -281,10 +281,61 @@ function capitalize(text: string): string {
 function findAndCut(text: string, re: RegExp): { m: RegExpMatchArray; rest: string } | null {
   const m = text.match(re);
   if (!m || m.index === undefined) return null;
-  const rest = (text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length))
-    .replace(/\s+/g, ' ')
-    .trim();
-  return { m, rest };
+  return { m, rest: cutMatch(text, m) };
+}
+
+/** `text` with the span of match `m` removed. */
+function cutMatch(text: string, m: RegExpMatchArray): string {
+  const at = m.index ?? 0;
+  return (text.slice(0, at) + ' ' + text.slice(at + m[0].length)).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Numeric ("15.09", "25.12.2026 в 12:00") and text-month ("15 сентября в 10:00")
+ * dates. Both capture: day, month, year, then the four TIME_OPT groups.
+ */
+const CALENDAR_DATES: [RegExp, string, (raw: string) => number | undefined][] = [
+  [
+    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${YEAR_SUFFIX}${TIME_OPT}${RB}`, 'gi'),
+    'numeric_date',
+    (raw) => +raw - 1,
+  ],
+  [
+    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${YEAR_SUFFIX}${TIME_OPT}${RB}`, 'gi'),
+    'text_month_date',
+    (raw) => MONTHS_RU[raw.toLowerCase()],
+  ],
+];
+
+/**
+ * Picks the date to remind on. A message can name two dates —
+ * "дедлайн 30 ноября, напомни 3 ноября" — and only one is when to remind; the
+ * other belongs to the reminder text. In order of preference: the date right
+ * after "напомни" (`afterVerb`, what the raw input says after the verb), the
+ * date written with a time, the earliest date in the sentence.
+ */
+function findCalendarDate(
+  text: string,
+  afterVerb: string
+): { m: RegExpMatchArray; day: number; month: number; adjacent?: ClockTime; pattern: string; alone: boolean } | null {
+  const found = [];
+  for (const [re, pattern, toMonth] of CALENDAR_DATES) {
+    for (const m of text.matchAll(re)) {
+      const day = +m[1];
+      const month = toMonth(m[2]);
+      // `null` means a time was written next to the date but is out of range.
+      const adjacent = readTimeGroups(m[4], m[5], m[6], m[7]);
+      if (adjacent === null || month === undefined || month < 0 || month > 11) continue;
+      if (day < 1 || day > 31) continue;
+      found.push({ m, day, month, adjacent, pattern });
+    }
+  }
+  found.sort((a, b) => (a.m.index ?? 0) - (b.m.index ?? 0));
+  const pick =
+    found.find((d) => afterVerb.startsWith(d.m[0].toLowerCase())) ??
+    found.find((d) => d.adjacent) ??
+    found[0];
+  return pick ? { ...pick, alone: found.length === 1 } : null;
 }
 
 /** Resolves a count group that may be digits, a word, or absent (meaning 1). */
@@ -542,59 +593,32 @@ export function parseReminderInput(
     }
   }
 
-  // --- 9. NUMERIC DATE: "15.09 в 12:00", "25.12.2026 12:00", "15.09" -------
-  const numericDate = findAndCut(
-    trimmed,
-    new RegExp(`${LB}(\\d{1,2})[./](\\d{1,2})(?:[./](\\d{2,4}))?${YEAR_SUFFIX}${TIME_OPT}${RB}`, 'i')
-  );
-  if (numericDate) {
-    const day = +numericDate.m[1];
-    const month = +numericDate.m[2] - 1;
-    // `null` means a time was written next to the date but is out of range.
-    const adjacent = readTimeGroups(numericDate.m[4], numericDate.m[5], numericDate.m[6], numericDate.m[7]);
+  // --- 9. CALENDAR DATE: "15.09 в 12:00", "25.12.2026 12:00", "15 сентября" -
+  // stripFillers has already dropped "напомни", so look for it in the raw input.
+  const afterVerb =
+    input
+      .match(/(?<![0-9a-zа-яё-])(?:напомни(?:ть|шь|те)?|напоминай)(?:-ка)?\s+(?:мне\s+)?(.*)$/i)?.[1]
+      .replace(/\s+/g, ' ')
+      .toLowerCase() ?? '';
+  const date = findCalendarDate(trimmed, afterVerb);
+  if (date) {
+    const dateRest = cutMatch(trimmed, date.m);
+    // With another date in the message, a loose time most likely belongs to it:
+    // "напомни 3 ноября про собеседование 30 ноября в 14:00".
+    const detached = date.adjacent === undefined && date.alone ? extractDetachedTime(dateRest) : null;
+    const time = date.adjacent ?? detached?.time;
+    const rest = detached ? detached.rest : dateRest;
+    const hours = time ? time.hours : DEFAULT_HOUR;
+    const minutes = time ? time.minutes : DEFAULT_MINUTE;
 
-    if (adjacent !== null && day >= 1 && day <= 31 && month >= 0 && month <= 11) {
-      const detached = adjacent === undefined ? extractDetachedTime(numericDate.rest) : null;
-      const time = adjacent ?? detached?.time;
-      const rest = detached ? detached.rest : numericDate.rest;
-      const hours = time ? time.hours : DEFAULT_HOUR;
-      const minutes = time ? time.minutes : DEFAULT_MINUTE;
-
-      let year = numericDate.m[3] ? +numericDate.m[3] : userNow.getFullYear();
-      if (year < 100) year += 2000;
-      let target = atTime(new Date(year, month, day), hours, minutes);
-      // A bare "15.09" that already passed means next year.
-      if (!numericDate.m[3] && target <= userNow) {
-        target = atTime(new Date(year + 1, month, day), hours, minutes);
-      }
-      return finish(target, rest, 'none', 'numeric_date');
+    let year = date.m[3] ? +date.m[3] : userNow.getFullYear();
+    if (year < 100) year += 2000;
+    let target = atTime(new Date(year, date.month, date.day), hours, minutes);
+    // A bare "15.09" that already passed means next year.
+    if (!date.m[3] && target <= userNow) {
+      target = atTime(new Date(year + 1, date.month, date.day), hours, minutes);
     }
-  }
-
-  // --- 10. TEXT MONTH: "15 сентября в 10:00", "15 сентября" ----------------
-  const textMonth = findAndCut(
-    trimmed,
-    new RegExp(`${LB}(\\d{1,2})\\s+(${MONTHS})${RB}(?:\\s+(\\d{4}))?${YEAR_SUFFIX}${TIME_OPT}${RB}`, 'i')
-  );
-  if (textMonth) {
-    const day = +textMonth.m[1];
-    const month = MONTHS_RU[textMonth.m[2].toLowerCase()];
-    const adjacent = readTimeGroups(textMonth.m[4], textMonth.m[5], textMonth.m[6], textMonth.m[7]);
-
-    if (adjacent !== null && month !== undefined && day >= 1 && day <= 31) {
-      const detached = adjacent === undefined ? extractDetachedTime(textMonth.rest) : null;
-      const time = adjacent ?? detached?.time;
-      const rest = detached ? detached.rest : textMonth.rest;
-      const hours = time ? time.hours : DEFAULT_HOUR;
-      const minutes = time ? time.minutes : DEFAULT_MINUTE;
-
-      const year = textMonth.m[3] ? +textMonth.m[3] : userNow.getFullYear();
-      let target = atTime(new Date(year, month, day), hours, minutes);
-      if (!textMonth.m[3] && target <= userNow) {
-        target = atTime(new Date(year + 1, month, day), hours, minutes);
-      }
-      return finish(target, rest, 'none', 'text_month_date');
-    }
+    return finish(target, rest, 'none', date.pattern);
   }
 
   // --- 11. CLOCK TIME ANYWHERE: "в 19:00", "19:00" -------------------------

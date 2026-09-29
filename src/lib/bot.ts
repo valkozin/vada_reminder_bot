@@ -862,12 +862,12 @@ bot.on('message:text', async (ctx) => {
   const recurLabel = RECURRENCE_LABELS[parsed.recurrence];
   const recurText = recurLabel ? `\n🔄 Повтор: <b>${esc(recurLabel)}</b>` : '';
 
-  // The first date in the message wins and the rest stays as ordinary words.
+  // One date is taken (see findCalendarDate) and the rest stays as ordinary words.
   // If what is left still parses as a date, the message was ambiguous — say so
   // rather than letting the user assume the other date was the one we took.
   const leftoverDate = parseReminderInput(parsed.text, userTz, sentAt);
   const ambiguityText = leftoverDate
-    ? `\n\n⚠️ <i>В тексте осталась ещё одна дата. Взял первую — если нужна другая, ` +
+    ? `\n\n⚠️ <i>В тексте осталась ещё одна дата. Если напомнить нужно в неё, ` +
       `нажмите «✍️ Другое время».</i>`
     : '';
 
