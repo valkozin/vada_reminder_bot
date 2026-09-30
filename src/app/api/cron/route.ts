@@ -75,8 +75,7 @@ async function handle(req: NextRequest) {
 
       await bot.api.sendMessage(
         reminder.chatId,
-        `🔔 <b>НАПОМИНАНИЕ</b>\n\n` +
-          `📌 <b>${esc(reminder.text)}</b>\n\n` +
+        `📌 <b>${esc(reminder.text)}</b>\n\n` +
           `⏰ <i>Было назначено на:</i> ${esc(scheduledFor)}`,
         { parse_mode: 'HTML', reply_markup: reminderKeyboard(reminder.id) }
       );
