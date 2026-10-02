@@ -58,6 +58,16 @@ function toLocalInputValue(iso: string, timezone: string): string {
   return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}`;
 }
 
+/**
+ * "YYYY-MM-DDTHH:mm" -> "DD.MM.YYYY HH:mm". The native datetime-local field
+ * displays its value in the device's locale (e.g. MM/DD/YYYY on an English
+ * phone) and a page cannot change that, so we show our own label instead.
+ */
+function formatInputValue(value: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/.exec(value);
+  return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}` : 'Выберите дату и время';
+}
+
 export default function MiniApp() {
   const [initData, setInitData] = useState<string | null>(null);
   const [outsideTelegram, setOutsideTelegram] = useState(false);
@@ -277,12 +287,28 @@ export default function MiniApp() {
                     className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm"
                     placeholder="Текст напоминания"
                   />
-                  <input
-                    type="datetime-local"
-                    value={draftWhen}
-                    onChange={(e) => setDraftWhen(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm"
-                  />
+                  {/* The real input sits invisibly on top of our label, so a tap
+                      still opens the system date picker. */}
+                  <label className="relative block rounded-lg focus-within:ring-2 focus-within:ring-indigo-500">
+                    <span className="block w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm">
+                      {formatInputValue(draftWhen)}
+                    </span>
+                    <input
+                      type="datetime-local"
+                      value={draftWhen}
+                      onChange={(e) => setDraftWhen(e.target.value)}
+                      onClick={(e) => {
+                        try {
+                          e.currentTarget.showPicker();
+                        } catch {
+                          // Not supported, or refused inside an iframe: the
+                          // tap still focuses the field as before.
+                        }
+                      }}
+                      aria-label="Дата и время"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                  </label>
                   <div className="flex gap-2">
                     <button
                       onClick={() => void saveEdit(reminder.id)}
