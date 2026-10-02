@@ -277,12 +277,24 @@ export default function MiniApp() {
                     className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm"
                     placeholder="Текст напоминания"
                   />
-                  <input
-                    type="datetime-local"
-                    value={draftWhen}
-                    onChange={(e) => setDraftWhen(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm"
-                  />
+                  {/* Separate date and time fields: Safari's datetime-local popup
+                      (Telegram for macOS) offers a calendar only, no way to set the time. */}
+                  <div className="flex gap-2">
+                    <input
+                      type="date"
+                      value={draftWhen.slice(0, 10)}
+                      onChange={(e) => setDraftWhen(`${e.target.value}T${draftWhen.slice(11)}`)}
+                      aria-label="Дата"
+                      className="flex-1 min-w-0 px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm"
+                    />
+                    <input
+                      type="time"
+                      value={draftWhen.slice(11)}
+                      onChange={(e) => setDraftWhen(`${draftWhen.slice(0, 10)}T${e.target.value}`)}
+                      aria-label="Время"
+                      className="w-28 px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 text-sm"
+                    />
+                  </div>
                   <div className="flex gap-2">
                     <button
                       onClick={() => void saveEdit(reminder.id)}
